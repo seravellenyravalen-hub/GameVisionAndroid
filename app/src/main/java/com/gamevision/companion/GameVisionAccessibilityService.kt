@@ -73,10 +73,9 @@ class GameVisionAccessibilityService : AccessibilityService() {
     private fun performGlobal(type: String, actionId: Int, callback: (Boolean, String) -> Unit) {
         val available = getSystemActions().any { it.id == actionId }
         if (!available) { callback(false, "Android system action $type is unavailable on this device/state"); return }
-        callback(performGlobalAction(actionId), if (performGlobalActionSafely(actionId)) "$type completed" else "Android could not perform $type")
+        val success = runCatching { performGlobalAction(actionId) }.getOrDefault(false)
+        callback(success, if (success) "$type completed" else "Android could not perform $type")
     }
-
-    private fun performGlobalActionSafely(actionId: Int): Boolean = runCatching { performGlobalAction(actionId) }.getOrDefault(false)
 }
 
 data class AutomationAction(val type: String, val x: Int, val y: Int, val x2: Int, val y2: Int, val durationMs: Long, val waitMs: Long, val reason: String, val confidence: Int, val verify: Boolean, val stopReason: String)
