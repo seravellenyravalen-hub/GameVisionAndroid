@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android" android:layout_width="match_parent" android:layout_height="match_parent">
+    <LinearLayout android:orientation="vertical" android:padding="24dp" android:layout_width="match_parent" android:layout_height="wrap_content">
+        <TextView android:text="GameVision Companion" android:textSize="28sp" android:textStyle="bold" android:layout_width="wrap_content" android:layout_height="wrap_content" />
+        <TextView android:text="Authorized screen monitor + floating HUD" android:textSize="15sp" android:layout_marginTop="6dp" android:layout_width="wrap_content" android:layout_height="wrap_content" />
+        <TextView android:id="@+id/statusText" android:text="Stopped" android:textStyle="bold" android:layout_marginTop="24dp" android:layout_width="match_parent" android:layout_height="wrap_content" />
+        <TextView android:text="GameVision server URL" android:layout_marginTop="24dp" android:layout_width="wrap_content" android:layout_height="wrap_content" />
+        <EditText android:id="@+id/serverUrl" android:inputType="textUri" android:singleLine="true" android:text="https://gamevision-monitor-0s07wr.v2.appdeploy.ai" android:layout_width="match_parent" android:layout_height="wrap_content" />
+        <Button android:id="@+id/overlayButton" android:text="Enable Display over other apps" android:layout_marginTop="18dp" android:layout_width="match_parent" android:layout_height="wrap_content" />
+        <TextView android:text="This opens Android's overlay permission screen. If your phone shows Special app access, select GameVision Companion and turn on Allow display over other apps, then return here." android:textSize="13sp" android:layout_marginTop="8dp" android:layout_width="match_parent" android:layout_height="wrap_content" />
+        <Button android:id="@+id/startButton" android:text="Start monitoring" android:layout_marginTop="10dp" android:layout_width="match_parent" android:layout_height="wrap_content" />
+        <Button android:id="@+id/stopButton" android:text="Stop monitoring" android:layout_marginTop="10dp" android:layout_width="match_parent" android:layout_height="wrap_content" />
+        <Button android:id="@+id/hudButton" android:text="Show / hide floating HUD" android:layout_marginTop="10dp" android:layout_width="match_parent" android:layout_height="wrap_content" />
+        <TextView android:text="Privacy: screen frames are captured only after you approve Android screen sharing. The companion sends captured frames to the configured GameVision analysis endpoint. Stop monitoring to end capture." android:textSize="13sp" android:layout_marginTop="24dp" android:layout_width="match_parent" android:layout_height="wrap_content" />
+    </LinearLayout>
+</ScrollView>
