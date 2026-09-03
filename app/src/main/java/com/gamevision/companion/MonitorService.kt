@@ -26,11 +26,11 @@ import android.view.Gravity
 import android.view.WindowManager
 import android.widget.TextView
 import java.io.ByteArrayOutputStream
+import java.io.IOException
 import java.net.HttpURLConnection
+import java.net.SocketTimeoutException
 import java.net.URL
 import java.net.UnknownHostException
-import java.net.SocketTimeoutException
-import java.io.IOException
 import java.util.Locale
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
@@ -67,26 +67,19 @@ class MonitorService : Service(), TextToSpeech.OnInitListener {
 
     private var lastUploadAt = 0L
 
-    private val mainHandler =
-        Handler(Looper.getMainLooper())
+    private val mainHandler = Handler(Looper.getMainLooper())
 
-    private val projectionCallback =
-        object : MediaProjection.Callback() {
-
-            override fun onStop() {
-                stopProjection()
-            }
+    private val projectionCallback = object : MediaProjection.Callback() {
+        override fun onStop() {
+            stopProjection()
         }
+    }
 
     override fun onCreate() {
         super.onCreate()
 
         createNotificationChannel()
-
-        tts = TextToSpeech(
-            this,
-            this
-        )
+        tts = TextToSpeech(this, this)
     }
 
     override fun onStartCommand(
@@ -96,148 +89,71 @@ class MonitorService : Service(), TextToSpeech.OnInitListener {
     ): Int {
 
         when (intent?.action) {
-
-            ACTION_START -> {
-                startProjection(intent)
-            }
-
-            ACTION_TOGGLE_HUD -> {
-                toggleOverlay()
-            }
+            ACTION_START -> startProjection(intent)
+            ACTION_TOGGLE_HUD -> toggleOverlay()
         }
 
         return START_NOT_STICKY
     }
 
-    private fun startProjection(
-        intent: Intent
-    ) {
+    private fun startProjection(intent: Intent) {
 
         if (running.get()) {
             return
         }
 
-        serverUrl =
-            intent
-                .getStringExtra(EXTRA_SERVER_URL)
-                ?.trim()
-                ?.takeIf {
-                    it.startsWith("http://") ||
-                        it.startsWith("https://")
-                }
-                ?: serverUrl
+        serverUrl = intent
+            .getStringExtra(EXTRA_SERVER_URL)
+            ?.takeIf { it.startsWith("http") }
+            ?: serverUrl
 
-        val resultCode =
-            intent.getIntExtra(
-                EXTRA_RESULT_CODE,
-                Activity.RESULT_CANCELED
-            )
+        val resultCode = intent.getIntExtra(
+            EXTRA_RESULT_CODE,
+            Activity.RESULT_CANCELED
+        )
 
         val data =
-            intent.getParcelableExtraCompat<Intent>(
-                EXTRA_RESULT_DATA
-            ) ?: run {
+            intent.getParcelableExtraCompat<Intent>(EXTRA_RESULT_DATA)
+                ?: return
 
-                updateOverlay(
-                    "GameVision\nMissing screen permission data"
-                )
-
-                return
-            }
-
-        try {
-
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-
-                startForeground(
-                    NOTIFICATION_ID,
-                    notification(
-                        "Monitoring visible game screen"
-                    ),
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
-                )
-
-            } else {
-
-                startForeground(
-                    NOTIFICATION_ID,
-                    notification(
-                        "Monitoring visible game screen"
-                    )
-                )
-            }
-
-        } catch (e: Exception) {
-
-            updateOverlay(
-                "GameVision\nForeground error\n${shortError(e)}"
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(
+                NOTIFICATION_ID,
+                notification("Monitoring visible game screen"),
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
             )
-
-            return
+        } else {
+            startForeground(
+                NOTIFICATION_ID,
+                notification("Monitoring visible game screen")
+            )
         }
 
         val manager =
-            getSystemService(
-                MediaProjectionManager::class.java
-            )
+            getSystemService(MediaProjectionManager::class.java)
 
-        projection =
-            try {
-
-                manager.getMediaProjection(
-                    resultCode,
-                    data
-                )
-
-            } catch (e: Exception) {
-
-                updateOverlay(
-                    "GameVision\nProjection error\n${shortError(e)}"
-                )
-
-                null
-            }
-
-        if (projection == null) {
-            return
-        }
+        projection = manager.getMediaProjection(
+            resultCode,
+            data
+        )
 
         projection?.registerCallback(
             projectionCallback,
             mainHandler
         )
 
-        val metrics =
-            resources.displayMetrics
+        val metrics = resources.displayMetrics
 
-        val width =
-            metrics.widthPixels
+        val width = metrics.widthPixels
+        val height = metrics.heightPixels
+        val densityDpi = metrics.densityDpi
 
-        val height =
-            metrics.heightPixels
-
-        val densityDpi =
-            metrics.densityDpi
-
-        reader =
-            try {
-
-                ImageReader.newInstance(
-                    width,
-                    height,
-                    PixelFormat.RGBA_8888,
-                    2
-                )
-
-            } catch (e: Exception) {
-
-                updateOverlay(
-                    "GameVision\nFrame reader error\n${shortError(e)}"
-                )
-
-                stopProjection()
-                return
-            }
+        reader = ImageReader.newInstance(
+            width,
+            height,
+            PixelFormat.RGBA_8888,
+            2
+        )
 
         reader?.setOnImageAvailableListener(
             { imageReader ->
@@ -246,95 +162,71 @@ class MonitorService : Service(), TextToSpeech.OnInitListener {
             mainHandler
         )
 
-        virtualDisplay =
-            try {
-
-                projection?.createVirtualDisplay(
-                    "GameVisionMonitor",
-                    width,
-                    height,
-                    densityDpi,
-                    DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-                    reader?.surface,
-                    null,
-                    null
-                )
-
-            } catch (e: Exception) {
-
-                updateOverlay(
-                    "GameVision\nDisplay error\n${shortError(e)}"
-                )
-
-                stopProjection()
-                return
-            }
+        virtualDisplay = projection?.createVirtualDisplay(
+            "GameVisionMonitor",
+            width,
+            height,
+            densityDpi,
+            DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+            reader?.surface,
+            null,
+            null
+        )
 
         running.set(true)
 
-        updateOverlay(
-            "GameVision\nMonitoring…"
-        )
-
         if (Settings.canDrawOverlays(this)) {
-
-            showOverlay(
-                "GameVision\nMonitoring…"
-            )
+            showOverlay("GameVision\nMonitoring…")
         }
     }
 
-    private fun onFrame(
-        imageReader: ImageReader
-    ) {
+    private fun onFrame(imageReader: ImageReader) {
 
         if (!running.get()) {
             return
         }
 
-        val now =
-            System.currentTimeMillis()
+        val now = System.currentTimeMillis()
 
         if (now - lastUploadAt < 1500L) {
             return
         }
 
-        val image =
-            try {
-
-                imageReader.acquireLatestImage()
-
-            } catch (e: Exception) {
-
-                updateOverlay(
-                    "GameVision\nCapture error\n${shortError(e)}"
-                )
-
-                null
-            } ?: return
+        val image = try {
+            imageReader.acquireLatestImage()
+        } catch (_: Exception) {
+            null
+        } ?: return
 
         lastUploadAt = now
 
         executor.execute {
 
             try {
-
-                val jpeg =
-                    imageToJpeg(image)
-
+                val jpeg = imageToJpeg(image)
                 uploadFrame(jpeg)
 
             } catch (e: Exception) {
 
-                val message =
-                    diagnosticError(e)
+                val message = when (e) {
+                    is UnknownHostException ->
+                        "DNS/server not found"
+
+                    is SocketTimeoutException ->
+                        "Connection timed out"
+
+                    is IOException ->
+                        e.message ?: "Network error"
+
+                    else ->
+                        e.message ?: e.javaClass.simpleName
+                }
 
                 updateOverlay(
-                    "GameVision\nUPLOAD FAILED\n$message"
+                    "GameVision\nUPLOAD FAILED\n${message.take(120)}"
                 )
 
             } finally {
-
                 try {
                     image.close()
                 } catch (_: Exception) {
@@ -343,46 +235,32 @@ class MonitorService : Service(), TextToSpeech.OnInitListener {
         }
     }
 
-    private fun imageToJpeg(
-        image: Image
-    ): ByteArray {
+    private fun imageToJpeg(image: Image): ByteArray {
 
-        val plane =
-            image.planes[0]
+        val plane = image.planes[0]
+        val buffer = plane.buffer
 
-        val buffer =
-            plane.buffer
-
-        val pixelStride =
-            plane.pixelStride
-
-        val rowStride =
-            plane.rowStride
+        val pixelStride = plane.pixelStride
+        val rowStride = plane.rowStride
 
         val rowPadding =
-            rowStride -
-                pixelStride * image.width
+            rowStride - pixelStride * image.width
 
         val bitmapWidth =
-            image.width +
-                rowPadding / pixelStride
+            image.width + rowPadding / pixelStride
 
-        val bitmap =
-            Bitmap.createBitmap(
-                bitmapWidth,
-                image.height,
-                Bitmap.Config.ARGB_8888
-            )
+        val bitmap = Bitmap.createBitmap(
+            bitmapWidth,
+            image.height,
+            Bitmap.Config.ARGB_8888
+        )
 
         buffer.rewind()
 
-        bitmap.copyPixelsFromBuffer(
-            buffer
-        )
+        bitmap.copyPixelsFromBuffer(buffer)
 
         val cropped =
             if (bitmap.width != image.width) {
-
                 Bitmap.createBitmap(
                     bitmap,
                     0,
@@ -390,34 +268,28 @@ class MonitorService : Service(), TextToSpeech.OnInitListener {
                     image.width,
                     image.height
                 )
-
             } else {
-
                 bitmap
             }
 
         val scaledWidth =
-            minOf(
-                cropped.width,
-                1600
-            )
+            minOf(cropped.width, 1600)
 
         val scaledHeight =
             (
                 cropped.height.toFloat() *
                     scaledWidth /
                     cropped.width
-            )
+                )
                 .roundToInt()
                 .coerceAtLeast(1)
 
-        val scaled =
-            Bitmap.createScaledBitmap(
-                cropped,
-                scaledWidth,
-                scaledHeight,
-                true
-            )
+        val scaled = Bitmap.createScaledBitmap(
+            cropped,
+            scaledWidth,
+            scaledHeight,
+            true
+        )
 
         val output =
             ByteArrayOutputStream()
@@ -439,47 +311,23 @@ class MonitorService : Service(), TextToSpeech.OnInitListener {
         return output.toByteArray()
     }
 
-    private fun uploadFrame(
-        jpeg: ByteArray
-    ) {
-
-        val cleanServerUrl =
-            serverUrl.trim().removeSuffix("/")
-
-        val endpoint =
-            "$cleanServerUrl/api/analyze-frame"
+    private fun uploadFrame(jpeg: ByteArray) {
 
         val url =
-            URL(endpoint)
+            URL("$serverUrl/api/analyze-frame")
 
         val connection =
-            url.openConnection()
-                as HttpURLConnection
+            url.openConnection() as HttpURLConnection
 
         try {
 
-            connection.requestMethod =
-                "POST"
-
-            connection.connectTimeout =
-                8000
-
-            connection.readTimeout =
-                12000
-
-            connection.doOutput =
-                true
-
-            connection.useCaches =
-                false
+            connection.requestMethod = "POST"
+            connection.connectTimeout = 8000
+            connection.readTimeout = 12000
+            connection.doOutput = true
 
             connection.setRequestProperty(
                 "Content-Type",
-                "application/json"
-            )
-
-            connection.setRequestProperty(
-                "Accept",
                 "application/json"
             )
 
@@ -505,68 +353,41 @@ class MonitorService : Service(), TextToSpeech.OnInitListener {
 
             if (responseCode !in 200..299) {
 
-                val errorBody =
-                    try {
+                val errorBody = try {
+                    connection.errorStream
+                        ?.bufferedReader()
+                        ?.use { it.readText() }
+                        .orEmpty()
+                } catch (_: Exception) {
+                    ""
+                }
 
-                        connection.errorStream
-                            ?.bufferedReader()
-                            ?.use {
-                                it.readText()
-                            }
-                            .orEmpty()
-
-                    } catch (_: Exception) {
-
-                        ""
-                    }
-
-                val cleanBody =
-                    errorBody
-                        .replace("\n", " ")
-                        .replace("\r", " ")
-                        .trim()
-                        .take(180)
+                val detail = errorBody
+                    .replace("\n", " ")
+                    .replace("\r", " ")
+                    .trim()
+                    .take(100)
 
                 val message =
-                    if (cleanBody.isNotBlank()) {
-
-                        "HTTP $responseCode\n$cleanBody"
-
+                    if (detail.isNotBlank()) {
+                        "HTTP $responseCode $detail"
                     } else {
-
                         "HTTP $responseCode"
                     }
 
-                throw ServerHttpException(
-                    responseCode,
-                    message
-                )
+                throw IllegalStateException(message)
             }
 
             val text =
                 connection.inputStream
                     .bufferedReader()
-                    .use {
-                        it.readText()
-                    }
+                    .use { it.readText() }
 
             val json =
-                try {
-
-                    org.json.JSONObject(text)
-
-                } catch (e: Exception) {
-
-                    throw IllegalStateException(
-                        "HTTP $responseCode\nInvalid JSON response",
-                        e
-                    )
-                }
+                org.json.JSONObject(text)
 
             val analysis =
-                json.optJSONObject(
-                    "analysis"
-                )
+                json.optJSONObject("analysis")
 
             val verified =
                 analysis?.optBoolean(
@@ -588,19 +409,14 @@ class MonitorService : Service(), TextToSpeech.OnInitListener {
 
             val note =
                 analysis
-                    ?.optJSONArray(
-                        "notes"
-                    )
+                    ?.optJSONArray("notes")
                     ?.optString(0)
                     .orEmpty()
 
             val label =
                 if (verified) {
-
                     "GameVision\n$score · $confidence%\nVERIFIED"
-
                 } else {
-
                     "GameVision\n$score · review"
                 }
 
@@ -611,84 +427,11 @@ class MonitorService : Service(), TextToSpeech.OnInitListener {
             }
 
         } finally {
-
             connection.disconnect()
         }
     }
 
-    private fun diagnosticError(
-        error: Exception
-    ): String {
-
-        return when (error) {
-
-            is ServerHttpException -> {
-
-                error.message
-                    ?: "HTTP ${error.statusCode}"
-            }
-
-            is UnknownHostException -> {
-
-                "DNS/server not found"
-            }
-
-            is SocketTimeoutException -> {
-
-                "Connection timed out"
-            }
-
-            is IOException -> {
-
-                val message =
-                    error.message
-                        ?.trim()
-                        .orEmpty()
-
-                if (message.isNotBlank()) {
-
-                    "Network: ${message.take(120)}"
-
-                } else {
-
-                    "Network connection error"
-                }
-            }
-
-            else -> {
-
-                shortError(error)
-            }
-        }
-    }
-
-    private fun shortError(
-        error: Throwable
-    ): String {
-
-        val message =
-            error.message
-                ?.replace("\n", " ")
-                ?.replace("\r", " ")
-                ?.trim()
-                .orEmpty()
-
-        val name =
-            error.javaClass.simpleName
-
-        return if (message.isNotBlank()) {
-
-            "$name: ${message.take(120)}"
-
-        } else {
-
-            name
-        }
-    }
-
-    private fun showOverlay(
-        text: String
-    ) {
+    private fun showOverlay(text: String) {
 
         if (!Settings.canDrawOverlays(this)) {
             return
@@ -699,18 +442,15 @@ class MonitorService : Service(), TextToSpeech.OnInitListener {
         }
 
         val wm =
-            getSystemService(
-                WINDOW_SERVICE
-            ) as WindowManager
+            getSystemService(WINDOW_SERVICE)
+                    as WindowManager
 
         val view =
             TextView(this).apply {
 
-                this.text =
-                    text
+                this.text = text
 
-                textSize =
-                    13f
+                textSize = 13f
 
                 setTextColor(
                     0xFFFFFFFF.toInt()
@@ -727,8 +467,7 @@ class MonitorService : Service(), TextToSpeech.OnInitListener {
                     12
                 )
 
-                isClickable =
-                    false
+                isClickable = false
             }
 
         val params =
@@ -742,8 +481,7 @@ class MonitorService : Service(), TextToSpeech.OnInitListener {
             ).apply {
 
                 gravity =
-                    Gravity.TOP or
-                        Gravity.END
+                    Gravity.TOP or Gravity.END
 
                 x = 16
                 y = 100
@@ -756,30 +494,21 @@ class MonitorService : Service(), TextToSpeech.OnInitListener {
                 params
             )
 
-            windowManager =
-                wm
-
-            overlay =
-                view
+            windowManager = wm
+            overlay = view
 
         } catch (_: Exception) {
 
-            overlay =
-                null
-
-            windowManager =
-                null
+            overlay = null
+            windowManager = null
         }
     }
 
-    private fun updateOverlay(
-        text: String
-    ) {
+    private fun updateOverlay(text: String) {
 
         mainHandler.post {
 
-            overlay?.text =
-                text
+            overlay?.text = text
         }
     }
 
@@ -799,31 +528,24 @@ class MonitorService : Service(), TextToSpeech.OnInitListener {
 
     private fun removeOverlay() {
 
-        val currentOverlay =
-            overlay
+        val currentOverlay = overlay
 
-        overlay =
-            null
+        overlay = null
 
         if (currentOverlay != null) {
 
             try {
-
                 windowManager?.removeView(
                     currentOverlay
                 )
-
             } catch (_: Exception) {
             }
         }
 
-        windowManager =
-            null
+        windowManager = null
     }
 
-    private fun speak(
-        text: String
-    ) {
+    private fun speak(text: String) {
 
         mainHandler.post {
 
@@ -836,16 +558,11 @@ class MonitorService : Service(), TextToSpeech.OnInitListener {
         }
     }
 
-    override fun onInit(
-        status: Int
-    ) {
+    override fun onInit(status: Int) {
 
-        if (status ==
-            TextToSpeech.SUCCESS
-        ) {
+        if (status == TextToSpeech.SUCCESS) {
 
-            tts?.language =
-                Locale.US
+            tts?.language = Locale.US
         }
     }
 
@@ -862,38 +579,30 @@ class MonitorService : Service(), TextToSpeech.OnInitListener {
         } catch (_: Exception) {
         }
 
-        virtualDisplay =
-            null
+        virtualDisplay = null
 
         try {
             reader?.close()
         } catch (_: Exception) {
         }
 
-        reader =
-            null
+        reader = null
 
-        val currentProjection =
-            projection
+        val currentProjection = projection
 
-        projection =
-            null
+        projection = null
 
         if (currentProjection != null) {
 
             try {
-
                 currentProjection.unregisterCallback(
                     projectionCallback
                 )
-
             } catch (_: Exception) {
             }
 
             try {
-
                 currentProjection.stop()
-
             } catch (_: Exception) {
             }
         }
@@ -901,11 +610,7 @@ class MonitorService : Service(), TextToSpeech.OnInitListener {
         removeOverlay()
 
         try {
-
-            stopForeground(
-                STOP_FOREGROUND_REMOVE
-            )
-
+            stopForeground(STOP_FOREGROUND_REMOVE)
         } catch (_: Exception) {
         }
 
@@ -921,21 +626,105 @@ class MonitorService : Service(), TextToSpeech.OnInitListener {
         } catch (_: Exception) {
         }
 
-        virtualDisplay =
-            null
+        virtualDisplay = null
 
         try {
             reader?.close()
         } catch (_: Exception) {
         }
 
-        reader =
-            null
+        reader = null
 
-        val currentProjection =
-            projection
+        val currentProjection = projection
 
-        projection =
-            null
+        projection = null
 
-        if (currentProjection !
+        if (currentProjection != null) {
+
+            try {
+                currentProjection.unregisterCallback(
+                    projectionCallback
+                )
+            } catch (_: Exception) {
+            }
+
+            try {
+                currentProjection.stop()
+            } catch (_: Exception) {
+            }
+        }
+
+        removeOverlay()
+
+        try {
+            tts?.shutdown()
+        } catch (_: Exception) {
+        }
+
+        tts = null
+
+        executor.shutdownNow()
+
+        super.onDestroy()
+    }
+
+    override fun onBind(
+        intent: Intent?
+    ): IBinder? = null
+
+    private fun notification(
+        text: String
+    ): Notification {
+
+        return Notification.Builder(
+            this,
+            CHANNEL
+        )
+            .setContentTitle(
+                "GameVision Companion"
+            )
+            .setContentText(text)
+            .setSmallIcon(
+                android.R.drawable.ic_menu_view
+            )
+            .setOngoing(true)
+            .build()
+    }
+
+    private fun createNotificationChannel() {
+
+        val manager =
+            getSystemService(
+                NotificationManager::class.java
+            )
+
+        manager.createNotificationChannel(
+            NotificationChannel(
+                CHANNEL,
+                "GameVision monitoring",
+                NotificationManager.IMPORTANCE_LOW
+            )
+        )
+    }
+}
+
+private inline fun <reified T : Parcelable>
+    Intent.getParcelableExtraCompat(
+        key: String
+    ): T? {
+
+    return if (
+        Build.VERSION.SDK_INT >= 33
+    ) {
+
+        getParcelableExtra(
+            key,
+            T::class.java
+        )
+
+    } else {
+
+        @Suppress("DEPRECATION")
+        getParcelableExtra(key)
+    }
+    }
