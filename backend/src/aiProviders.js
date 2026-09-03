@@ -43,17 +43,17 @@ export const assistantSchema = {
   additionalProperties: false
 };
 
-const ACTION_TYPES = ["TAP", "DOUBLE_TAP", "LONG_PRESS", "SWIPE", "DRAG", "WAIT", "BACK", "HOME", "RECENTS", "NOTIFICATIONS", "QUICK_SETTINGS", "STOP"];
+const ACTION_TYPES = ["TAP", "DOUBLE_TAP", "LONG_PRESS", "SWIPE", "DRAG", "TYPE_TEXT", "WAIT", "BACK", "HOME", "RECENTS", "NOTIFICATIONS", "QUICK_SETTINGS", "STOP"];
 
 export const actionSchema = {
   type: "object",
   properties: {
     type: { type: "string", enum: ACTION_TYPES },
-    x: { type: "number" }, y: { type: "number" }, x2: { type: "number" }, y2: { type: "number" },
+    x: { type: "number" }, y: { type: "number" }, x2: { type: "number" }, y2: { type: "number" }, text: { type: "string" },
     durationMs: { type: "number" }, waitMs: { type: "number" },
     reason: { type: "string" }, confidence: { type: "number" }, verify: { type: "boolean" }, stopReason: { type: "string" }
   },
-  required: ["type", "x", "y", "x2", "y2", "durationMs", "waitMs", "reason", "confidence", "verify", "stopReason"],
+  required: ["type", "x", "y", "x2", "y2", "text", "durationMs", "waitMs", "reason", "confidence", "verify", "stopReason"],
   additionalProperties: false
 };
 
@@ -128,5 +128,5 @@ export async function decideWithOpenAI(images, goal, history = []) {
 
 export async function decideWithGemini(images, goal, history = []) {
   if (!GEMINI_API_KEY) throw new Error("Gemini is not configured");
-  return postGemini(buildAutomationPrompt(goal, history), images, { type: "OBJECT", properties: { type: { type: "STRING", enum: ACTION_TYPES }, x: { type: "NUMBER" }, y: { type: "NUMBER" }, x2: { type: "NUMBER" }, y2: { type: "NUMBER" }, durationMs: { type: "NUMBER" }, waitMs: { type: "NUMBER" }, reason: { type: "STRING" }, confidence: { type: "NUMBER" }, verify: { type: "BOOLEAN" }, stopReason: { type: "STRING" } }, required: ["type", "x", "y", "x2", "y2", "durationMs", "waitMs", "reason", "confidence", "verify", "stopReason"] });
+  return postGemini(buildAutomationPrompt(goal, history), images, { type: "OBJECT", properties: { type: { type: "STRING", enum: ACTION_TYPES }, x: { type: "NUMBER" }, y: { type: "NUMBER" }, x2: { type: "NUMBER" }, y2: { type: "NUMBER" }, text: { type: "STRING" }, durationMs: { type: "NUMBER" }, waitMs: { type: "NUMBER" }, reason: { type: "STRING" }, confidence: { type: "NUMBER" }, verify: { type: "BOOLEAN" }, stopReason: { type: "STRING" } }, required: ["type", "x", "y", "x2", "y2", "text", "durationMs", "waitMs", "reason", "confidence", "verify", "stopReason"] });
 }
