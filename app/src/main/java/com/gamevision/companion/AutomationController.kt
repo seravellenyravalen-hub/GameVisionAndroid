@@ -38,12 +38,7 @@ class AutomationController {
         serverUrl = server.trim().removeSuffix("/")
         goal = requestedGoal.trim()
         history = previousMessages.takeLast(10).toMutableList()
-        steps = 0
-        failures = 0
-        lowConfidenceRetries = 0
-        lastFrameSequence = 0L
-        statusListener = listener
-        active.set(true)
+        steps = 0; failures = 0; lowConfidenceRetries = 0; lastFrameSequence = 0L; statusListener = listener; active.set(true)
         listener("AUTO ON • getting a fresh screen…")
         waitForFreshFrame(0L, MAX_FRAME_WAIT_MS) { ready, sequence, error ->
             if (!active.get()) return@waitForFreshFrame
@@ -55,32 +50,21 @@ class AutomationController {
     }
 
     fun stop(reason: String = "Stopped by user") {
-        if (active.getAndSet(false)) {
-            handler.post { statusListener?.invoke("AUTO OFF • $reason") }
-        }
+        if (active.getAndSet(false)) handler.post { statusListener?.invoke("AUTO OFF • $reason") }
     }
 
     fun isActive() = active.get()
 
-    private fun requestDecision(delayMs: Long = 0) {
-        handler.postDelayed({ if (active.get()) executor.execute { decide() } }, delayMs)
-    }
+    private fun requestDecision(delayMs: Long = 0) { handler.postDelayed({ if (active.get()) executor.execute { decide() } }, delayMs) }
 
     private fun decide() {
         if (!active.get()) return
         if (steps >= MAX_STEPS) { stop("maximum session steps reached"); return }
         try {
             val connection = URL("$serverUrl/api/automation/decide").openConnection() as HttpURLConnection
-            connection.requestMethod = "POST"
-            connection.connectTimeout = 7000
-            connection.readTimeout = 22000
-            connection.doOutput = true
-            connection.setRequestProperty("Content-Type", "application/json")
-            connection.setRequestProperty("Accept", "application/json")
-            val payload = JSONObject()
-                .put("goal", goal)
-                .put("minFrameSequence", lastFrameSequence)
-                .put("messages", JSONArray(history.map { it.toString() }))
+            connection.requestMethod = "POST"; connection.connectTimeout = 7000; connection.readTimeout = 22000; connection.doOutput = true
+            connection.setRequestProperty("Content-Type", "application/json"); connection.setRequestProperty("Accept", "application/json")
+            val payload = JSONObject().put("goal", goal).put("minFrameSequence", lastFrameSequence).put("messages", JSONArray(history.map { it.toString() }))
             connection.outputStream.use { it.write(payload.toString().toByteArray(Charsets.UTF_8)) }
             val code = connection.responseCode
             val body = (if (code in 200..299) connection.inputStream else connection.errorStream)?.bufferedReader()?.use { it.readText() }.orEmpty()
@@ -103,9 +87,8 @@ class AutomationController {
             val sequence = frame?.optLong("sequence", lastFrameSequence) ?: lastFrameSequence
             if (sequence > lastFrameSequence) lastFrameSequence = sequence
             val action = AutomationAction(
-                type = actionJson.optString("type", "STOP"),
-                x = actionJson.optInt("x", 0), y = actionJson.optInt("y", 0),
-                x2 = actionJson.optInt("x2", 0), y2 = actionJson.optInt("y2", 0),
+                type = actionJson.optString("type", "STOP"), x = actionJson.optInt("x", 0), y = actionJson.optInt("y", 0),
+                x2 = actionJson.optInt("x2", 0), y2 = actionJson.optInt("y2", 0), text = actionJson.optString("text", ""),
                 durationMs = actionJson.optLong("durationMs", 600), waitMs = actionJson.optLong("waitMs", 800),
                 reason = actionJson.optString("reason", ""), confidence = actionJson.optInt("confidence", 0),
                 verify = actionJson.optBoolean("verify", true), stopReason = actionJson.optString("stopReason", "")
@@ -113,22 +96,17 @@ class AutomationController {
             if (!active.get()) return
             if (action.type == "STOP") { stop(action.stopReason.ifBlank { action.reason.ifBlank { "AI requested stop" } }); return }
             if (action.confidence < 70) {
-                lowConfidenceRetries++
-                postStatus("RECHECKING • AI confidence ${action.confidence}%")
+                lowConfidenceRetries++; postStatus("RECHECKING • AI confidence ${action.confidence}%")
                 if (lowConfidenceRetries >= LOW_CONFIDENCE_RETRIES) { stop("AI could not confidently determine the next action"); return }
-                requestDecision(400)
-                return
+                requestDecision(400); return
             }
-            lowConfidenceRetries = 0
-            failures = 0
-            steps++
+            lowConfidenceRetries = 0; failures = 0; steps++
             postStatus("AUTO • ${action.type} • ${action.confidence}% • ${action.reason.take(90)}")
             GameVisionAccessibilityService.execute(action) { success, result ->
                 handler.post {
                     if (!active.get()) return@post
                     if (!success) {
-                        failures++
-                        postStatus("RETRYING • $result")
+                        failures++; postStatus("RETRYING • $result")
                         if (failures >= 3) stop("three consecutive Android action failures") else requestDecision(700)
                         return@post
                     }
@@ -147,8 +125,7 @@ class AutomationController {
             }
         } catch (error: Exception) {
             if (!active.get()) return
-            failures++
-            postStatus("RETRYING • ${error.message ?: "network failure"}")
+            failures++; postStatus("RETRYING • ${error.message ?: "network failure"}")
             if (failures >= 3) stop("repeated automation errors") else requestDecision(1200)
         }
     }
@@ -160,24 +137,14 @@ class AutomationController {
             executor.execute {
                 try {
                     val connection = URL("$serverUrl/api/frame-status").openConnection() as HttpURLConnection
-                    connection.requestMethod = "GET"
-                    connection.connectTimeout = 4000
-                    connection.readTimeout = 5000
+                    connection.requestMethod = "GET"; connection.connectTimeout = 4000; connection.readTimeout = 5000
                     val code = connection.responseCode
                     val body = (if (code in 200..299) connection.inputStream else connection.errorStream)?.bufferedReader()?.use { it.readText() }.orEmpty()
                     connection.disconnect()
                     if (code !in 200..299) throw IllegalStateException("HTTP $code")
-                    val json = JSONObject(body)
-                    val sequence = json.optLong("sequence", 0L)
-                    val fresh = json.optBoolean("fresh", false)
-                    if (sequence > minSequence && fresh) {
-                        handler.post { callback(true, sequence, null) }
-                        return@execute
-                    }
-                    if (System.currentTimeMillis() >= deadline) {
-                        handler.post { callback(false, sequence, "Timed out waiting for a fresh screen") }
-                        return@execute
-                    }
+                    val json = JSONObject(body); val sequence = json.optLong("sequence", 0L); val fresh = json.optBoolean("fresh", false)
+                    if (sequence > minSequence && fresh) { handler.post { callback(true, sequence, null) }; return@execute }
+                    if (System.currentTimeMillis() >= deadline) { handler.post { callback(false, sequence, "Timed out waiting for a fresh screen") }; return@execute }
                     handler.postDelayed({ poll() }, FRAME_POLL_MS)
                 } catch (error: Exception) {
                     if (System.currentTimeMillis() >= deadline) handler.post { callback(false, minSequence, "Screen status unavailable: ${error.message ?: "network failure"}") }
