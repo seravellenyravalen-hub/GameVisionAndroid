@@ -322,6 +322,7 @@ class MonitorService : Service(), TextToSpeech.OnInitListener {
         try {
 
             connection.requestMethod = "POST"
+            connection.setRequestProperty("Content-Type", "application/json")
             connection.connectTimeout = 8000
             connection.readTimeout = 12000
             connection.doOutput = true
