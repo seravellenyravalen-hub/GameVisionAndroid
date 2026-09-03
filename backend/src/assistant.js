@@ -1,5 +1,16 @@
 const FALLBACK_ANSWER = "I could not determine that from the available context.";
 
+const VISUAL_PATTERNS = [
+  /\b(screen|display|visible|see|look|shown|picture|image|button|menu|icon|text|page|window|game|level|player|object)\b/i,
+  /\b(tap|click|press|hold|swipe|scroll|drag|drop|move|open|close|select|choose|type|enter|go back|go home|recents|notification|quick settings)\b/i,
+  /\b(do|perform|execute|control|play|start|stop)\b.*\b(it|this|that|game|app|screen|button|menu)\b/i
+];
+
+export function isScreenDependentInstruction(instruction) {
+  const request = String(instruction || "").trim();
+  return VISUAL_PATTERNS.some((pattern) => pattern.test(request));
+}
+
 export function normalizeHistory(history) {
   if (!Array.isArray(history)) return [];
   return history
@@ -15,13 +26,18 @@ function historyText(history) {
   return turns.map((item) => `${item.role.toUpperCase()}: ${item.content}`).join("\n");
 }
 
-export function buildAssistantPrompt(instruction, history = []) {
+export function buildAssistantPrompt(instruction, history = [], hasVision = true) {
   const request = String(instruction || "").trim().slice(0, 1000);
-  return `You are GameVision, a general-purpose conversational visual assistant that can help a user understand and interact with the currently visible screen. You are NOT a football assistant and must not assume any particular game genre.
+  const visionState = hasVision
+    ? "A current screen image set is supplied. Use it when relevant."
+    : "NO CURRENT SCREEN IMAGE IS SUPPLIED. Answer from the conversation/general knowledge only. Do not claim to see the screen or invent visual facts.";
+  return `You are GameVision, an active general-purpose AI companion. You can converse naturally, reason about the user's request, use current screen evidence when available, and help carry out user-authorized tasks through the capabilities exposed by the Android companion. You are NOT a football assistant and must not assume any particular game genre.
 
-Use the provided screen images when the request concerns the screen, a game, an app, an object, text, a button, a menu, or an action that depends on what is visible. You may answer ordinary conversational questions from the conversation context, but never invent visual facts. If something needed for a screen-based answer is not clearly visible, say so.
+${visionState}
 
-Never use hidden game memory, undocumented APIs, private state, or outside information to claim something about the current screen. Be concise and directly useful.
+Be active and useful. Do not respond with a generic refusal when the request can be answered from the available context. If the request requires a screen fact and no current screen is supplied, clearly say that a fresh screen is needed. If a task requires an action, explain the next useful step rather than pretending it was completed.
+
+Never invent a visual fact, hidden game state, or completed action. Never claim success unless the platform reports success.
 
 RECENT CONVERSATION:
 ${historyText(history)}
@@ -32,21 +48,30 @@ ${request}`;
 
 export function buildAutomationPrompt(goal, history = []) {
   const request = String(goal || "").trim().slice(0, 1200);
-  return `You are GameVision's generic visual game-control planner. The user has explicitly enabled autonomous control. You are NOT specialized for football or any other genre. Infer the current interface only from the supplied screen images and the user's goal.
+  return `You are GameVision's active generic visual-control planner. The user has explicitly enabled autonomous control. You are NOT specialized for football or any other genre. Infer the current interface only from the supplied screen images and the user's goal.
 
-Return exactly ONE next action. Do not plan a long blind sequence. Observe the current screen, choose one useful action, let Android execute it, then the next request will contain a fresh screen.
+Return exactly ONE next action. Do not plan a long blind sequence. Android will execute it, capture a newer screen, and ask you for the next action.
 
-Supported actions:
+Supported coordinate actions:
 - TAP: tap one normalized screen coordinate.
+- DOUBLE_TAP: two taps at the same normalized coordinate.
 - LONG_PRESS: hold one normalized coordinate for durationMs.
 - SWIPE: move from (x,y) to (x2,y2) over durationMs.
-- DRAG: same coordinate model as SWIPE, used when the interaction is a drag.
+- DRAG: same coordinate model as SWIPE, used when a held drag is needed.
 - WAIT: wait for a visible transition or animation.
-- STOP: stop because the goal is complete, the screen is unexpected, evidence is insufficient, or continuing would be unsafe.
+
+Supported global actions:
+- BACK: Android Back.
+- HOME: Android Home.
+- RECENTS: Android recent-apps overview.
+- NOTIFICATIONS: open notifications.
+- QUICK_SETTINGS: open Quick Settings.
+
+GLOBAL ACTIONS are only valid when the Android accessibility service reports that the requested system action is available.
 
 Coordinates MUST use the full-screen coordinate system from 0 to 1000 on both axes, regardless of image resolution. Do not invent coordinates. Only interact with controls/areas that are visibly supported by the current images.
 
-The user goal may be broad. Work it out from the screen instead of assuming a game type. Prefer a single conservative action with confidence >= 70. If confidence is below 70, return STOP with a useful stopReason rather than guessing.
+The user goal may be broad. Work it out from the screen instead of assuming a game type. Prefer an action that advances the goal. Do not stop merely because the task is multi-step; continue one verified action at a time. Use STOP only when the goal is complete, the screen is genuinely blocked/unexpected, the requested capability is unavailable, or evidence is insufficient to choose a safe action.
 
 RECENT CONTEXT:
 ${historyText(history)}
@@ -64,7 +89,7 @@ export function normalizeAssistantReply(raw) {
 }
 
 export function normalizeAction(raw) {
-  const allowed = new Set(["TAP", "LONG_PRESS", "SWIPE", "DRAG", "WAIT", "STOP"]);
+  const allowed = new Set(["TAP", "DOUBLE_TAP", "LONG_PRESS", "SWIPE", "DRAG", "WAIT", "BACK", "HOME", "RECENTS", "NOTIFICATIONS", "QUICK_SETTINGS", "STOP"]);
   const type = allowed.has(String(raw?.type || "").toUpperCase()) ? String(raw.type).toUpperCase() : "STOP";
   const number = (value) => Math.min(1000, Math.max(0, Number(value) || 0));
   const durationMs = Math.min(5000, Math.max(100, Number(raw?.durationMs) || 600));
