@@ -111,14 +111,14 @@ export async function analyzeWithGemini(images) {
   });
 }
 
-export async function askWithOpenAI(images, instruction, history = []) {
+export async function askWithOpenAI(images, instruction, history = [], visionFresh = true) {
   if (!OPENAI_API_KEY) throw new Error("OpenAI is not configured");
-  return postOpenAI({ model: OPENAI_MODEL, store: false, input: [{ role: "user", content: [{ type: "input_text", text: buildAssistantPrompt(instruction, history, Array.isArray(images) && images.length > 0) }, ...imagesToOpenAIContent(images)] }], text: { format: { type: "json_schema", name: "gamevision_assistant_reply", strict: true, schema: assistantSchema } } });
+  return postOpenAI({ model: OPENAI_MODEL, store: false, input: [{ role: "user", content: [{ type: "input_text", text: buildAssistantPrompt(instruction, history, Array.isArray(images) && images.length > 0, visionFresh) }, ...imagesToOpenAIContent(images)] }], text: { format: { type: "json_schema", name: "gamevision_assistant_reply", strict: true, schema: assistantSchema } } });
 }
 
-export async function askWithGemini(images, instruction, history = []) {
+export async function askWithGemini(images, instruction, history = [], visionFresh = true) {
   if (!GEMINI_API_KEY) throw new Error("Gemini is not configured");
-  return postGemini(buildAssistantPrompt(instruction, history, Array.isArray(images) && images.length > 0), images, { type: "OBJECT", properties: { answer: { type: "STRING" }, confidence: { type: "NUMBER" } }, required: ["answer", "confidence"] });
+  return postGemini(buildAssistantPrompt(instruction, history, Array.isArray(images) && images.length > 0, visionFresh), images, { type: "OBJECT", properties: { answer: { type: "STRING" }, confidence: { type: "NUMBER" } }, required: ["answer", "confidence"] });
 }
 
 export async function decideWithOpenAI(images, goal, history = []) {
