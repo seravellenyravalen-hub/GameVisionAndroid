@@ -43,10 +43,12 @@ export const assistantSchema = {
   additionalProperties: false
 };
 
+const ACTION_TYPES = ["TAP", "DOUBLE_TAP", "LONG_PRESS", "SWIPE", "DRAG", "WAIT", "BACK", "HOME", "RECENTS", "NOTIFICATIONS", "QUICK_SETTINGS", "STOP"];
+
 export const actionSchema = {
   type: "object",
   properties: {
-    type: { type: "string", enum: ["TAP", "LONG_PRESS", "SWIPE", "DRAG", "WAIT", "STOP"] },
+    type: { type: "string", enum: ACTION_TYPES },
     x: { type: "number" }, y: { type: "number" }, x2: { type: "number" }, y2: { type: "number" },
     durationMs: { type: "number" }, waitMs: { type: "number" },
     reason: { type: "string" }, confidence: { type: "number" }, verify: { type: "boolean" }, stopReason: { type: "string" }
@@ -69,11 +71,11 @@ function parseJsonText(text, provider) {
 }
 
 function imagesToOpenAIContent(images) {
-  return images.map((image) => ({ type: "input_image", image_url: `data:${image.mimeType};base64,${image.data}`, detail: "high" }));
+  return (Array.isArray(images) ? images : []).map((image) => ({ type: "input_image", image_url: `data:${image.mimeType};base64,${image.data}`, detail: "high" }));
 }
 
 function imagesToGeminiParts(images) {
-  return images.map((image) => ({ inline_data: { mime_type: image.mimeType, data: image.data } }));
+  return (Array.isArray(images) ? images : []).map((image) => ({ inline_data: { mime_type: image.mimeType, data: image.data } }));
 }
 
 async function postOpenAI(body) {
@@ -111,12 +113,12 @@ export async function analyzeWithGemini(images) {
 
 export async function askWithOpenAI(images, instruction, history = []) {
   if (!OPENAI_API_KEY) throw new Error("OpenAI is not configured");
-  return postOpenAI({ model: OPENAI_MODEL, store: false, input: [{ role: "user", content: [{ type: "input_text", text: buildAssistantPrompt(instruction, history) }, ...imagesToOpenAIContent(images)] }], text: { format: { type: "json_schema", name: "gamevision_assistant_reply", strict: true, schema: assistantSchema } } });
+  return postOpenAI({ model: OPENAI_MODEL, store: false, input: [{ role: "user", content: [{ type: "input_text", text: buildAssistantPrompt(instruction, history, Array.isArray(images) && images.length > 0) }, ...imagesToOpenAIContent(images)] }], text: { format: { type: "json_schema", name: "gamevision_assistant_reply", strict: true, schema: assistantSchema } } });
 }
 
 export async function askWithGemini(images, instruction, history = []) {
   if (!GEMINI_API_KEY) throw new Error("Gemini is not configured");
-  return postGemini(buildAssistantPrompt(instruction, history), images, { type: "OBJECT", properties: { answer: { type: "STRING" }, confidence: { type: "NUMBER" } }, required: ["answer", "confidence"] });
+  return postGemini(buildAssistantPrompt(instruction, history, Array.isArray(images) && images.length > 0), images, { type: "OBJECT", properties: { answer: { type: "STRING" }, confidence: { type: "NUMBER" } }, required: ["answer", "confidence"] });
 }
 
 export async function decideWithOpenAI(images, goal, history = []) {
@@ -126,5 +128,5 @@ export async function decideWithOpenAI(images, goal, history = []) {
 
 export async function decideWithGemini(images, goal, history = []) {
   if (!GEMINI_API_KEY) throw new Error("Gemini is not configured");
-  return postGemini(buildAutomationPrompt(goal, history), images, { type: "OBJECT", properties: { type: { type: "STRING", enum: ["TAP", "LONG_PRESS", "SWIPE", "DRAG", "WAIT", "STOP"] }, x: { type: "NUMBER" }, y: { type: "NUMBER" }, x2: { type: "NUMBER" }, y2: { type: "NUMBER" }, durationMs: { type: "NUMBER" }, waitMs: { type: "NUMBER" }, reason: { type: "STRING" }, confidence: { type: "NUMBER" }, verify: { type: "BOOLEAN" }, stopReason: { type: "STRING" } }, required: ["type", "x", "y", "x2", "y2", "durationMs", "waitMs", "reason", "confidence", "verify", "stopReason"] });
+  return postGemini(buildAutomationPrompt(goal, history), images, { type: "OBJECT", properties: { type: { type: "STRING", enum: ACTION_TYPES }, x: { type: "NUMBER" }, y: { type: "NUMBER" }, x2: { type: "NUMBER" }, y2: { type: "NUMBER" }, durationMs: { type: "NUMBER" }, waitMs: { type: "NUMBER" }, reason: { type: "STRING" }, confidence: { type: "NUMBER" }, verify: { type: "BOOLEAN" }, stopReason: { type: "STRING" } }, required: ["type", "x", "y", "x2", "y2", "durationMs", "waitMs", "reason", "confidence", "verify", "stopReason"] });
 }
