@@ -1,10 +1,9 @@
 import express from "express";
+import { mergeProviderResults, normalizeProviderResult } from "./analysis.js";
+import { analyzeWithGemini, analyzeWithOpenAI, providerStatus } from "./aiProviders.js";
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash-lite";
-const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
 
 app.use(express.json({ limit: "10mb" }));
 
@@ -20,8 +19,13 @@ app.get("/health", (req, res) => {
   res.status(200).json({
     status: "healthy",
     service: "gamevision-api",
-    aiConfigured: Boolean(GEMINI_API_KEY),
-    model: GEMINI_MODEL,
+    aiConfigured: providerStatus.openaiConfigured || providerStatus.geminiConfigured,
+    openaiConfigured: providerStatus.openaiConfigured,
+    geminiConfigured: providerStatus.geminiConfigured,
+    primaryProvider: providerStatus.openaiConfigured ? "openai" : "gemini",
+    openaiModel: providerStatus.openaiModel,
+    geminiModel: providerStatus.geminiModel,
+    model: providerStatus.openaiConfigured ? providerStatus.openaiModel : providerStatus.geminiModel,
     timestamp: new Date().toISOString()
   });
 });
@@ -30,41 +34,16 @@ app.get("/", (req, res) => {
   res.json({
     service: "GameVision API",
     status: "online",
-    aiConfigured: Boolean(GEMINI_API_KEY),
-    model: GEMINI_MODEL
+    aiConfigured: providerStatus.openaiConfigured || providerStatus.geminiConfigured,
+    openaiConfigured: providerStatus.openaiConfigured,
+    geminiConfigured: providerStatus.geminiConfigured,
+    primaryProvider: providerStatus.openaiConfigured ? "openai" : "gemini",
+    openaiModel: providerStatus.openaiModel,
+    geminiModel: providerStatus.geminiModel
   });
 });
 
-const responseSchema = {
-  type: "OBJECT",
-  properties: {
-    homeTeam: { type: "STRING", nullable: true },
-    awayTeam: { type: "STRING", nullable: true },
-    homeScore: { type: "INTEGER", nullable: true },
-    awayScore: { type: "INTEGER", nullable: true },
-    minute: { type: "STRING", nullable: true },
-    event: { type: "STRING", nullable: true },
-    confidence: { type: "NUMBER" },
-    notes: { type: "ARRAY", items: { type: "STRING" } }
-  },
-  required: ["homeTeam", "awayTeam", "homeScore", "awayScore", "minute", "event", "confidence", "notes"]
-};
-
-function cleanText(value) {
-  return typeof value === "string" && value.trim() ? value.trim() : null;
-}
-
-function clamp(value, min, max) {
-  return Math.min(max, Math.max(min, value));
-}
-
-function parseGeminiJson(data) {
-  const text = data?.candidates?.[0]?.content?.parts?.find((part) => typeof part.text === "string")?.text;
-  if (!text) throw new Error("Gemini returned no analysis text");
-  return JSON.parse(text);
-}
-
-app.post("/api/analyze-frame", async (req, res, next) => {
+app.post("/api/analyze-frame", async (req, res) => {
   try {
     const image = req.body?.image;
 
@@ -72,80 +51,49 @@ app.post("/api/analyze-frame", async (req, res, next) => {
       return res.status(400).json({ error: "Image payload required" });
     }
 
-    if (!GEMINI_API_KEY) {
+    if (!["image/jpeg", "image/png", "image/webp"].includes(image.mimeType)) {
+      return res.status(400).json({ error: "Unsupported image type" });
+    }
+
+    if (!providerStatus.openaiConfigured && !providerStatus.geminiConfigured) {
       return res.status(503).json({
         error: "AI analysis is not configured",
         code: "AI_NOT_CONFIGURED"
       });
     }
 
-    if (!["image/jpeg", "image/png", "image/webp"].includes(image.mimeType)) {
-      return res.status(400).json({ error: "Unsupported image type" });
+    const attempts = await Promise.allSettled([
+      providerStatus.openaiConfigured ? analyzeWithOpenAI(image) : Promise.reject(new Error("OpenAI is not configured")),
+      providerStatus.geminiConfigured ? analyzeWithGemini(image) : Promise.reject(new Error("Gemini is not configured"))
+    ]);
+
+    const openaiRaw = attempts[0].status === "fulfilled" ? attempts[0].value : null;
+    const geminiRaw = attempts[1].status === "fulfilled" ? attempts[1].value : null;
+
+    if (attempts[0].status === "rejected") {
+      console.error("OpenAI analysis unavailable:", attempts[0].reason?.message || attempts[0].reason);
+    }
+    if (attempts[1].status === "rejected") {
+      console.error("Gemini analysis unavailable:", attempts[1].reason?.message || attempts[1].reason);
     }
 
-    const prompt = `You are GameVision, a conservative sports-screen vision analyzer. Analyze ONLY the visible pixels in this screenshot/frame. Do not use hidden data, APIs, memory, assumptions, or outside knowledge. Identify a live sports scoreboard or game HUD only when it is clearly visible.
-
-Rules:
-- If a team name, score, minute, or event is not clearly readable, return null for that field.
-- Never invent or guess a score.
-- confidence is 0 to 100 and must reflect visual certainty only.
-- notes must be short and factual.
-- Return JSON matching the supplied schema.`;
-
-    const response = await fetch(`${GEMINI_URL}?key=${encodeURIComponent(GEMINI_API_KEY)}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      signal: AbortSignal.timeout(15000),
-      body: JSON.stringify({
-        contents: [{
-          parts: [
-            { text: prompt },
-            { inline_data: { mime_type: image.mimeType, data: image.data } }
-          ]
-        }],
-        generationConfig: {
-          responseMimeType: "application/json",
-          responseSchema,
-          temperature: 0
-        }
-      })
-    });
-
-    if (!response.ok) {
-      const detail = await response.text();
-      console.error("Gemini request failed", response.status, detail.slice(0, 500));
+    if (!openaiRaw && !geminiRaw) {
       return res.status(502).json({
         error: "AI analysis service unavailable",
         code: "AI_UPSTREAM_ERROR"
       });
     }
 
-    const data = await response.json();
-    const result = parseGeminiJson(data);
-
-    const homeScore = Number.isInteger(result.homeScore) && result.homeScore >= 0 ? result.homeScore : null;
-    const awayScore = Number.isInteger(result.awayScore) && result.awayScore >= 0 ? result.awayScore : null;
-    const confidence = clamp(Number(result.confidence) || 0, 0, 100);
-    const verified = homeScore !== null && awayScore !== null && Boolean(cleanText(result.minute)) && confidence >= 80;
-
-    const score = homeScore !== null && awayScore !== null ? `${homeScore}-${awayScore}` : "Unknown";
-    const risk = verified ? "low" : "review";
-    const notes = Array.isArray(result.notes) ? result.notes.filter((item) => typeof item === "string").slice(0, 5) : [];
+    const openaiResult = openaiRaw ? normalizeProviderResult(openaiRaw, "openai") : null;
+    const geminiResult = geminiRaw ? normalizeProviderResult(geminiRaw, "gemini") : null;
+    const merged = mergeProviderResults(openaiResult, geminiResult);
 
     return res.json({
-      analysis: {
-        score,
-        confidence: Math.round(confidence),
-        verified,
-        risk,
-        notes: notes.length ? notes : ["Analysis based only on visible frame content."],
-        prediction: { home: 0, draw: 0, away: 0 },
-        details: {
-          homeTeam: cleanText(result.homeTeam),
-          awayTeam: cleanText(result.awayTeam),
-          minute: cleanText(result.minute),
-          event: cleanText(result.event)
-        }
+      analysis: merged,
+      providers: {
+        openai: Boolean(openaiResult),
+        gemini: Boolean(geminiResult),
+        agreement: merged.agreement
       }
     });
   } catch (error) {
