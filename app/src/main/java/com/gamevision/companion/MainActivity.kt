@@ -2,6 +2,7 @@ package com.gamevision.companion
 
 import android.app.Activity
 import android.content.Intent
+import android.graphics.Color
 import android.media.projection.MediaProjectionManager
 import android.net.Uri
 import android.os.Build
@@ -10,21 +11,32 @@ import android.provider.Settings
 import android.widget.Button
 import android.widget.EditText
 import android.widget.TextView
+import org.json.JSONObject
+import java.net.HttpURLConnection
+import java.net.URL
+import java.util.concurrent.Executors
 
 class MainActivity : Activity() {
     private lateinit var status: TextView
+    private lateinit var visionAiStatus: TextView
     private lateinit var serverUrl: EditText
     private val captureRequest = 4101
+    private val healthExecutor = Executors.newSingleThreadExecutor()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
         status = findViewById(R.id.statusText)
+        visionAiStatus = findViewById(R.id.visionAiStatus)
         serverUrl = findViewById(R.id.serverUrl)
         findViewById<Button>(R.id.overlayButton).setOnClickListener { openOverlaySettings() }
         findViewById<Button>(R.id.startButton).setOnClickListener { requestCapture() }
-        findViewById<Button>(R.id.stopButton).setOnClickListener { stopService(Intent(this, MonitorService::class.java)); status.text = "Stopped" }
+        findViewById<Button>(R.id.stopButton).setOnClickListener {
+            stopService(Intent(this, MonitorService::class.java))
+            status.text = "Stopped"
+        }
         findViewById<Button>(R.id.hudButton).setOnClickListener { sendHudToggle() }
+        checkAiConfiguration()
     }
 
     private fun openOverlaySettings() {
@@ -40,12 +52,10 @@ class MainActivity : Activity() {
         try {
             startActivity(appIntent)
         } catch (_: Exception) {
-            // Some Android/OEM builds ignore the package-specific destination.
-            // Fall back to the Special App Access screen instead of failing silently.
             try {
                 startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION))
             } catch (_: Exception) {
-                status.text = "Open Settings → Special app access → Display over other apps → GameVision Companion"
+                status.text = "Open Settings → Special app access → Display over other apps → GameVision"
             }
         }
     }
@@ -59,7 +69,69 @@ class MainActivity : Activity() {
                 "Display over other apps: NOT ENABLED — tap the button below"
             }
         }
+        if (::serverUrl.isInitialized) checkAiConfiguration()
     }
+
+    private fun checkAiConfiguration() {
+        val baseUrl = serverUrl.text.toString().trim().removeSuffix("/")
+        if (!baseUrl.startsWith("http://") && !baseUrl.startsWith("https://")) {
+            setAiStatus("SERVER URL INVALID", Color.RED)
+            return
+        }
+
+        visionAiStatus.text = "CHECKING…"
+        visionAiStatus.setTextColor(getColorCompat(com.gamevision.companion.R.color.gv_lime))
+
+        healthExecutor.execute {
+            var connection: HttpURLConnection? = null
+            try {
+                connection = URL("$baseUrl/health").openConnection() as HttpURLConnection
+                connection.requestMethod = "GET"
+                connection.connectTimeout = 5000
+                connection.readTimeout = 5000
+                connection.setRequestProperty("Accept", "application/json")
+
+                val responseCode = connection.responseCode
+                if (responseCode !in 200..299) {
+                    throw IllegalStateException("HTTP $responseCode")
+                }
+
+                val body = connection.inputStream.bufferedReader().use { it.readText() }
+                val json = JSONObject(body)
+                val healthy = json.optString("status") == "healthy"
+                val configured = json.optBoolean("aiConfigured", false)
+                val model = json.optString("model", "AI")
+
+                runOnUiThread {
+                    when {
+                        !healthy -> setAiStatus("SERVER UNHEALTHY", Color.RED)
+                        configured -> setAiStatus("READY", getColorCompat(com.gamevision.companion.R.color.gv_lime))
+                        else -> setAiStatus("AI NOT CONFIGURED", Color.RED)
+                    }
+                    if (configured) {
+                        status.text = "AI connected — $model"
+                    } else {
+                        status.text = "Server online, but AI key is not configured"
+                    }
+                }
+            } catch (error: Exception) {
+                runOnUiThread {
+                    setAiStatus("OFFLINE", Color.RED)
+                    status.text = "AI server unavailable — ${error.message ?: "connection failed"}"
+                }
+            } finally {
+                connection?.disconnect()
+            }
+        }
+    }
+
+    private fun setAiStatus(text: String, color: Int) {
+        visionAiStatus.text = text
+        visionAiStatus.setTextColor(color)
+    }
+
+    @Suppress("DEPRECATION")
+    private fun getColorCompat(id: Int): Int = getColor(id)
 
     private fun requestCapture() {
         val mgr = getSystemService(MediaProjectionManager::class.java)
@@ -86,5 +158,10 @@ class MainActivity : Activity() {
         }
         if (Build.VERSION.SDK_INT >= 26) startForegroundService(intent) else startService(intent)
         status.text = "Monitoring started — switch to the game"
+    }
+
+    override fun onDestroy() {
+        healthExecutor.shutdownNow()
+        super.onDestroy()
     }
 }
