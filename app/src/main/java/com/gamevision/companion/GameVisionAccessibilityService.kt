@@ -9,6 +9,9 @@ import android.os.Looper
 import android.view.ViewConfiguration
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import kotlin.math.abs
+import kotlin.math.max
+import kotlin.math.min
 
 class GameVisionAccessibilityService : AccessibilityService() {
     companion object {
@@ -40,22 +43,66 @@ class GameVisionAccessibilityService : AccessibilityService() {
 
         val width = resources.displayMetrics.widthPixels.toFloat()
         val height = resources.displayMetrics.heightPixels.toFloat()
-        fun px(value: Int, max: Float) = (value.coerceIn(0, 1000) / 1000f) * max
+        fun px(value: Int, maxValue: Float) = (value.coerceIn(0, 1000) / 1000f) * maxValue
         val x = px(action.x, width); val y = px(action.y, height); val x2 = px(action.x2, width); val y2 = px(action.y2, height)
         val tapDuration = ViewConfiguration.getTapTimeout().toLong().coerceAtLeast(40L)
-        val path = Path().apply { if (action.type == "SWIPE" || action.type == "DRAG") { moveTo(x, y); lineTo(x2, y2) } else moveTo(x, y) }
-        val duration = when (action.type) { "LONG_PRESS" -> action.durationMs.coerceAtLeast(500L); "SWIPE", "DRAG" -> action.durationMs.coerceAtLeast(150L); else -> tapDuration }
+        val duration = when (action.type) {
+            "LONG_PRESS" -> action.durationMs.coerceAtLeast(500L)
+            "SWIPE", "DRAG", "TWO_FINGER_SWIPE" -> action.durationMs.coerceAtLeast(150L)
+            "PINCH_IN", "PINCH_OUT" -> action.durationMs.coerceAtLeast(250L)
+            else -> tapDuration
+        }
+
         val builder = GestureDescription.Builder()
-        if (action.type == "DOUBLE_TAP") {
-            builder.addStroke(GestureDescription.StrokeDescription(Path().apply { moveTo(x, y) }, 0, tapDuration))
-            builder.addStroke(GestureDescription.StrokeDescription(Path().apply { moveTo(x, y) }, tapDuration + 90L, tapDuration))
-        } else builder.addStroke(GestureDescription.StrokeDescription(path, 0, duration))
+        when (action.type) {
+            "DOUBLE_TAP" -> {
+                builder.addStroke(GestureDescription.StrokeDescription(Path().apply { moveTo(x, y) }, 0, tapDuration))
+                builder.addStroke(GestureDescription.StrokeDescription(Path().apply { moveTo(x, y) }, tapDuration + 90L, tapDuration))
+            }
+            "PINCH_IN", "PINCH_OUT" -> addPinch(builder, x, y, x2, y2, duration, action.type == "PINCH_OUT")
+            "TWO_FINGER_SWIPE" -> addTwoFingerSwipe(builder, x, y, x2, y2, duration)
+            else -> {
+                val path = Path().apply {
+                    if (action.type == "SWIPE" || action.type == "DRAG") { moveTo(x, y); lineTo(x2, y2) }
+                    else moveTo(x, y)
+                }
+                builder.addStroke(GestureDescription.StrokeDescription(path, 0, duration))
+            }
+        }
+
         val gesture = builder.build()
         val dispatched = dispatchGesture(gesture, object : GestureResultCallback() {
             override fun onCompleted(gestureDescription: GestureDescription?) { callback(true, "${action.type} completed") }
             override fun onCancelled(gestureDescription: GestureDescription?) { callback(false, "${action.type} cancelled by Android") }
         }, Handler(Looper.getMainLooper()))
         if (!dispatched) callback(false, "Android rejected ${action.type}")
+    }
+
+    private fun addPinch(builder: GestureDescription.Builder, cx: Float, cy: Float, outerX: Float, outerY: Float, duration: Long, outward: Boolean) {
+        var dx = outerX - cx
+        var dy = outerY - cy
+        val length = max(40f, kotlin.math.sqrt(dx * dx + dy * dy))
+        dx = dx / length * min(length, 360f)
+        dy = dy / length * min(length, 360f)
+        val startDistance = 40f
+        val endDistance = min(length, 360f)
+        val start1 = if (outward) Pair(cx - dx * startDistance / endDistance, cy - dy * startDistance / endDistance) else Pair(cx - dx, cy - dy)
+        val start2 = if (outward) Pair(cx + dx * startDistance / endDistance, cy + dy * startDistance / endDistance) else Pair(cx + dx, cy + dy)
+        val end1 = if (outward) Pair(cx - dx, cy - dy) else Pair(cx, cy)
+        val end2 = if (outward) Pair(cx + dx, cy + dy) else Pair(cx, cy)
+        builder.addStroke(GestureDescription.StrokeDescription(Path().apply { moveTo(start1.first, start1.second); lineTo(end1.first, end1.second) }, 0, duration))
+        builder.addStroke(GestureDescription.StrokeDescription(Path().apply { moveTo(start2.first, start2.second); lineTo(end2.first, end2.second) }, 0, duration))
+    }
+
+    private fun addTwoFingerSwipe(builder: GestureDescription.Builder, startX: Float, startY: Float, endX: Float, endY: Float, duration: Long) {
+        val dx = endX - startX
+        val dy = endY - startY
+        val distance = max(1f, kotlin.math.sqrt(dx * dx + dy * dy))
+        val offset = min(55f, distance / 4f)
+        val ox = -dy / distance * offset
+        val oy = dx / distance * offset
+        builder.addStroke(GestureDescription.StrokeDescription(Path().apply { moveTo(startX + ox, startY + oy); lineTo(endX + ox, endY + oy) }, 0, duration))
+        builder.addStroke(GestureDescription.StrokeDescription(Path().apply { moveTo(startX - ox, startY - oy); lineTo(endX - ox, endY - oy) }, 0, duration))
     }
 
     private fun typeText(text: String, callback: (Boolean, String) -> Unit) {
