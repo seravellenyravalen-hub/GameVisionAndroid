@@ -4,5 +4,6 @@
     android:accessibilityEventTypes="typeAllMask"
     android:accessibilityFeedbackType="feedbackGeneric"
     android:canPerformGestures="true"
+    android:canRetrieveWindowContent="true"
     android:notificationTimeout="100"
     android:settingsActivity="com.gamevision.companion.MainActivity" />
