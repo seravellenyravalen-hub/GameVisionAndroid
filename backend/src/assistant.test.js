@@ -19,6 +19,7 @@ test("automation prompt is game agnostic and one-step", () => {
   assert.match(prompt, /TAP/);
   assert.match(prompt, /SWIPE/);
   assert.match(prompt, /DOUBLE_TAP/);
+  assert.match(prompt, /TYPE_TEXT/);
   assert.match(prompt, /GLOBAL ACTIONS/i);
 });
 
@@ -34,10 +35,11 @@ test("distinguishes ordinary conversation from screen-dependent requests", () =>
   assert.equal(isScreenDependentInstruction("Tell me what you remember from our chat"), false);
 });
 
-test("normalizes expanded touch and global actions", () => {
+test("normalizes expanded touch, text and global actions", () => {
   assert.equal(normalizeAction({ type: "TAP", x: 100, y: 200, confidence: 40 }).type, "STOP");
   assert.equal(normalizeAction({ type: "SWIPE", x: 100, y: 200, x2: 700, y2: 200, confidence: 90 }).type, "SWIPE");
   assert.equal(normalizeAction({ type: "DOUBLE_TAP", x: 500, y: 500, confidence: 90 }).type, "DOUBLE_TAP");
+  assert.equal(normalizeAction({ type: "TYPE_TEXT", text: "hello", confidence: 90 }).text, "hello");
   assert.equal(normalizeAction({ type: "BACK", confidence: 95 }).type, "BACK");
   assert.equal(normalizeAction({ type: "HOME", confidence: 95 }).type, "HOME");
   assert.equal(normalizeAction({ type: "RECENTS", confidence: 95 }).type, "RECENTS");
