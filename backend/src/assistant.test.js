@@ -7,7 +7,7 @@ test("assistant prompt is generic and includes recent conversation", () => {
     { role: "user", content: "Open the game" },
     { role: "assistant", content: "The game screen is visible." }
   ]);
-  assert.match(prompt, /general-purpose conversational visual assistant/i);
+  assert.match(prompt, /active general-purpose AI companion/i);
   assert.match(prompt, /OPEN THE GAME/i);
   assert.match(prompt, /football/i);
 });
