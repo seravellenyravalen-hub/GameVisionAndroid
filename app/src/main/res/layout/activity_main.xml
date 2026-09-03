@@ -1,16 +1,244 @@
 <?xml version="1.0" encoding="utf-8"?>
-<ScrollView xmlns:android="http://schemas.android.com/apk/res/android" android:layout_width="match_parent" android:layout_height="match_parent">
-    <LinearLayout android:orientation="vertical" android:padding="24dp" android:layout_width="match_parent" android:layout_height="wrap_content">
-        <TextView android:text="GameVision Companion" android:textSize="28sp" android:textStyle="bold" android:layout_width="wrap_content" android:layout_height="wrap_content" />
-        <TextView android:text="Authorized screen monitor + floating HUD" android:textSize="15sp" android:layout_marginTop="6dp" android:layout_width="wrap_content" android:layout_height="wrap_content" />
-        <TextView android:id="@+id/statusText" android:text="Stopped" android:textStyle="bold" android:layout_marginTop="24dp" android:layout_width="match_parent" android:layout_height="wrap_content" />
-        <TextView android:text="GameVision server URL" android:layout_marginTop="24dp" android:layout_width="wrap_content" android:layout_height="wrap_content" />
-        <EditText android:id="@+id/serverUrl" android:inputType="textUri" android:singleLine="true" android:text="https://gamevision-api-production.up.railway.app" android:layout_width="match_parent" android:layout_height="wrap_content" />
-        <Button android:id="@+id/overlayButton" android:text="Enable Display over other apps" android:layout_marginTop="18dp" android:layout_width="match_parent" android:layout_height="wrap_content" />
-        <TextView android:text="This opens Android's overlay permission screen. If your phone shows Special app access, select GameVision Companion and turn on Allow display over other apps, then return here." android:textSize="13sp" android:layout_marginTop="8dp" android:layout_width="match_parent" android:layout_height="wrap_content" />
-        <Button android:id="@+id/startButton" android:text="Start monitoring" android:layout_marginTop="10dp" android:layout_width="match_parent" android:layout_height="wrap_content" />
-        <Button android:id="@+id/stopButton" android:text="Stop monitoring" android:layout_marginTop="10dp" android:layout_width="match_parent" android:layout_height="wrap_content" />
-        <Button android:id="@+id/hudButton" android:text="Show / hide floating HUD" android:layout_marginTop="10dp" android:layout_width="match_parent" android:layout_height="wrap_content" />
-        <TextView android:text="Privacy: screen frames are captured only after you approve Android screen sharing. The companion sends captured frames to the configured GameVision analysis endpoint. Stop monitoring to end capture." android:textSize="13sp" android:layout_marginTop="24dp" android:layout_width="match_parent" android:layout_height="wrap_content" />
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/gv_bg"
+    android:fillViewport="true">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:paddingStart="20dp"
+        android:paddingTop="18dp"
+        android:paddingEnd="20dp"
+        android:paddingBottom="28dp">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <ImageView
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:contentDescription="GameVision logo"
+                android:src="@drawable/ic_gamevision_logo" />
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="12dp"
+                android:layout_weight="1"
+                android:orientation="vertical">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="GAMEVISION"
+                    android:textColor="@color/gv_text"
+                    android:textSize="21sp"
+                    android:textStyle="bold"
+                    android:letterSpacing="0.12" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="2dp"
+                    android:text="SEE EVERY MOMENT. KNOW EVERY DETAIL."
+                    android:textColor="@color/gv_muted"
+                    android:textSize="10sp"
+                    android:letterSpacing="0.08" />
+            </LinearLayout>
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:background="@drawable/bg_lime_button"
+                android:paddingStart="10dp"
+                android:paddingTop="6dp"
+                android:paddingEnd="10dp"
+                android:paddingBottom="6dp"
+                android:text="LIVE AI"
+                android:textColor="@color/gv_bg"
+                android:textSize="10sp"
+                android:textStyle="bold" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="22dp"
+            android:background="@drawable/bg_card"
+            android:orientation="vertical"
+            android:padding="18dp">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="MONITORING STATUS"
+                android:textColor="@color/gv_muted"
+                android:textSize="10sp"
+                android:textStyle="bold"
+                android:letterSpacing="0.12" />
+
+            <TextView
+                android:id="@+id/statusText"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="Ready to monitor"
+                android:textColor="@color/gv_text"
+                android:textSize="19sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="5dp"
+                android:text="Capture the visible game screen and receive conservative AI analysis in the floating HUD."
+                android:textColor="@color/gv_muted"
+                android:textSize="12sp" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:orientation="horizontal">
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginEnd="6dp"
+                android:layout_weight="1"
+                android:background="@drawable/bg_card"
+                android:orientation="vertical"
+                android:padding="15dp">
+                <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="SCREEN" android:textColor="@color/gv_muted" android:textSize="9sp" android:textStyle="bold" />
+                <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="5dp" android:text="READY" android:textColor="@color/gv_green" android:textSize="15sp" android:textStyle="bold" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="6dp"
+                android:layout_weight="1"
+                android:background="@drawable/bg_card"
+                android:orientation="vertical"
+                android:padding="15dp">
+                <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="VISION AI" android:textColor="@color/gv_muted" android:textSize="9sp" android:textStyle="bold" />
+                <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="5dp" android:text="CONNECTED" android:textColor="@color/gv_lime" android:textSize="15sp" android:textStyle="bold" />
+            </LinearLayout>
+        </LinearLayout>
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:text="ANALYSIS SERVER"
+            android:textColor="@color/gv_muted"
+            android:textSize="10sp"
+            android:textStyle="bold"
+            android:letterSpacing="0.12" />
+
+        <EditText
+            android:id="@+id/serverUrl"
+            android:layout_width="match_parent"
+            android:layout_height="52dp"
+            android:layout_marginTop="8dp"
+            android:background="@drawable/bg_card"
+            android:inputType="textUri"
+            android:paddingStart="15dp"
+            android:paddingEnd="15dp"
+            android:singleLine="true"
+            android:text="https://gamevision-api-production.up.railway.app"
+            android:textColor="@color/gv_text"
+            android:textColorHint="@color/gv_muted"
+            android:textSize="12sp" />
+
+        <Button
+            android:id="@+id/overlayButton"
+            android:layout_width="match_parent"
+            android:layout_height="52dp"
+            android:layout_marginTop="18dp"
+            android:background="@drawable/bg_outline_button"
+            android:text="ENABLE DISPLAY OVER OTHER APPS"
+            android:textColor="@color/gv_text"
+            android:textSize="11sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="7dp"
+            android:text="Required for the floating HUD. Android will open the system permission page."
+            android:textColor="@color/gv_muted"
+            android:textSize="11sp" />
+
+        <Button
+            android:id="@+id/startButton"
+            android:layout_width="match_parent"
+            android:layout_height="56dp"
+            android:layout_marginTop="18dp"
+            android:background="@drawable/bg_lime_button"
+            android:text="START GAMEVISION MONITOR"
+            android:textColor="@color/gv_bg"
+            android:textSize="12sp"
+            android:textStyle="bold" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/stopButton"
+                android:layout_width="0dp"
+                android:layout_height="50dp"
+                android:layout_marginEnd="5dp"
+                android:layout_weight="1"
+                android:background="@drawable/bg_outline_button"
+                android:text="STOP"
+                android:textColor="@color/gv_red"
+                android:textSize="11sp"
+                android:textStyle="bold" />
+
+            <Button
+                android:id="@+id/hudButton"
+                android:layout_width="0dp"
+                android:layout_height="50dp"
+                android:layout_marginStart="5dp"
+                android:layout_weight="1"
+                android:background="@drawable/bg_outline_button"
+                android:text="TOGGLE HUD"
+                android:textColor="@color/gv_text"
+                android:textSize="11sp"
+                android:textStyle="bold" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="22dp"
+            android:background="@drawable/bg_card"
+            android:orientation="vertical"
+            android:padding="15dp">
+            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="PRIVACY & CONTROL" android:textColor="@color/gv_muted" android:textSize="9sp" android:textStyle="bold" android:letterSpacing="0.1" />
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="7dp" android:text="GameVision captures only after you approve Android screen sharing. Frames are sent to your configured analysis server. Stop monitoring to end capture. No game memory access or gameplay automation is used."
+                android:textColor="@color/gv_muted" android:textSize="11sp" android:lineSpacingExtra="2dp" />
+        </LinearLayout>
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="18dp"
+            android:gravity="center"
+            android:text="GAMEVISION COMPANION • SPORTS VISION"
+            android:textColor="@color/gv_stroke"
+            android:textSize="9sp"
+            android:letterSpacing="0.08" />
     </LinearLayout>
 </ScrollView>
