@@ -327,9 +327,19 @@ class MonitorService : Service(), TextToSpeech.OnInitListener {
             connection.doOutput = true
 
             connection.setRequestProperty(
-                "Content-Type",
-                "application/json"
-            )
+    "Accept",
+    "application/json"
+)
+
+connection.setRequestProperty(
+    "User-Agent",
+    "GameVision-Companion/1.0"
+)
+
+connection.setRequestProperty(
+    "Origin",
+    serverUrl
+)
 
             val base64 =
                 android.util.Base64.encodeToString(
