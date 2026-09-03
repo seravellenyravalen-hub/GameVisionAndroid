@@ -28,7 +28,7 @@ class MainActivity : Activity() {
     private val audioRequest = 4102
     private val healthExecutor = Executors.newSingleThreadExecutor()
     private val mainHandler = Handler(Looper.getMainLooper())
-    private val defaultServerUrl = "https://gamevision-api-v2-production.up.railway.app"
+    private val defaultServerUrl = "https://gamevision-api-v4-production.up.railway.app"
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState); setContentView(R.layout.activity_main)
