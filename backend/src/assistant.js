@@ -26,11 +26,13 @@ function historyText(history) {
   return turns.map((item) => `${item.role.toUpperCase()}: ${item.content}`).join("\n");
 }
 
-export function buildAssistantPrompt(instruction, history = [], hasVision = true) {
+export function buildAssistantPrompt(instruction, history = [], hasVision = true, visionFresh = true) {
   const request = String(instruction || "").trim().slice(0, 1000);
-  const visionState = hasVision
-    ? "A current screen image set is supplied. Use it when relevant."
-    : "NO CURRENT SCREEN IMAGE IS SUPPLIED. Answer from the conversation/general knowledge only. Do not claim to see the screen or invent visual facts.";
+  const visionState = !hasVision
+    ? "NO CURRENT SCREEN IMAGE IS SUPPLIED. Answer from the conversation/general knowledge only. Do not claim to see the screen or invent visual facts."
+    : visionFresh
+      ? "A fresh current screen image set is supplied. Use it when relevant."
+      : "A screen image set is supplied, but it may be stale. Use it only for facts that are still reasonably supported and do not claim it is current.";
   return `You are GameVision, an active general-purpose AI companion. You can converse naturally, reason about the user's request, use current screen evidence when available, and help carry out user-authorized tasks through the capabilities exposed by the Android companion. You are NOT a football assistant and must not assume any particular game genre.
 
 ${visionState}
