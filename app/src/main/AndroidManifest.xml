@@ -7,7 +7,9 @@
 
     <application
         android:allowBackup="false"
-        android:label="GameVision Companion"
+        android:icon="@mipmap/ic_launcher"
+        android:label="GameVision"
+        android:roundIcon="@mipmap/ic_launcher"
         android:supportsRtl="true"
         android:theme="@style/Theme.GameVision">
         <activity android:name=".MainActivity" android:exported="true">
