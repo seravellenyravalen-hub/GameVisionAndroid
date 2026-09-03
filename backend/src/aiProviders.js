@@ -1,3 +1,5 @@
+import { buildAssistantPrompt } from "./assistant.js";
+
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY?.trim() || "";
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-5.6-sol";
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY?.trim() || "";
@@ -35,6 +37,16 @@ const providerSchema = {
   additionalProperties: false
 };
 
+const assistantSchema = {
+  type: "object",
+  properties: {
+    answer: { type: "string" },
+    confidence: { type: "number" }
+  },
+  required: ["answer", "confidence"],
+  additionalProperties: false
+};
+
 export const analysisPrompt = `You are GameVision, a conservative sports-screen vision analyzer. Analyze ONLY the visible pixels in this screenshot/frame. Do not use hidden data, APIs, memory, assumptions, or outside knowledge. Identify a live sports scoreboard or game HUD only when it is clearly visible.
 
 Rules:
@@ -55,9 +67,7 @@ function parseJsonText(text, provider) {
   }
 }
 
-export async function analyzeWithOpenAI(image) {
-  if (!OPENAI_API_KEY) throw new Error("OpenAI is not configured");
-
+async function postOpenAI(body) {
   const response = await fetch("https://api.openai.com/v1/responses", {
     method: "POST",
     headers: {
@@ -65,52 +75,45 @@ export async function analyzeWithOpenAI(image) {
       Authorization: `Bearer ${OPENAI_API_KEY}`
     },
     signal: AbortSignal.timeout(15000),
-    body: JSON.stringify({
-      model: OPENAI_MODEL,
-      store: false,
-      input: [{
-        role: "user",
-        content: [
-          { type: "input_text", text: analysisPrompt },
-          { type: "input_image", image_url: `data:${image.mimeType};base64,${image.data}`, detail: "high" }
-        ]
-      }],
-      text: {
-        format: {
-          type: "json_schema",
-          name: "gamevision_frame_analysis",
-          strict: true,
-          schema: providerSchema
-        }
-      }
-    })
+    body: JSON.stringify(body)
   });
-
   if (!response.ok) {
     const detail = await response.text();
     console.error("OpenAI request failed", response.status, detail.slice(0, 500));
     throw new Error(`OpenAI upstream error ${response.status}`);
   }
-
   const data = await response.json();
   return parseJsonText(data?.output_text, "OpenAI");
 }
 
+export async function analyzeWithOpenAI(image) {
+  if (!OPENAI_API_KEY) throw new Error("OpenAI is not configured");
+  return postOpenAI({
+    model: OPENAI_MODEL,
+    store: false,
+    input: [{
+      role: "user",
+      content: [
+        { type: "input_text", text: analysisPrompt },
+        { type: "input_image", image_url: `data:${image.mimeType};base64,${image.data}`, detail: "high" }
+      ]
+    }],
+    text: { format: { type: "json_schema", name: "gamevision_frame_analysis", strict: true, schema: providerSchema } }
+  });
+}
+
 export async function analyzeWithGemini(image) {
   if (!GEMINI_API_KEY) throw new Error("Gemini is not configured");
-
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
   const response = await fetch(`${url}?key=${encodeURIComponent(GEMINI_API_KEY)}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     signal: AbortSignal.timeout(15000),
     body: JSON.stringify({
-      contents: [{
-        parts: [
-          { text: analysisPrompt },
-          { inline_data: { mime_type: image.mimeType, data: image.data } }
-        ]
-      }],
+      contents: [{ parts: [
+        { text: analysisPrompt },
+        { inline_data: { mime_type: image.mimeType, data: image.data } }
+      ] }],
       generationConfig: {
         responseMimeType: "application/json",
         responseSchema: {
@@ -131,13 +134,57 @@ export async function analyzeWithGemini(image) {
       }
     })
   });
-
   if (!response.ok) {
     const detail = await response.text();
     console.error("Gemini request failed", response.status, detail.slice(0, 500));
     throw new Error(`Gemini upstream error ${response.status}`);
   }
+  const data = await response.json();
+  const text = data?.candidates?.[0]?.content?.parts?.find((part) => typeof part.text === "string")?.text;
+  return parseJsonText(text, "Gemini");
+}
 
+export async function askWithOpenAI(image, instruction) {
+  if (!OPENAI_API_KEY) throw new Error("OpenAI is not configured");
+  return postOpenAI({
+    model: OPENAI_MODEL,
+    store: false,
+    input: [{ role: "user", content: [
+      { type: "input_text", text: buildAssistantPrompt(instruction) },
+      { type: "input_image", image_url: `data:${image.mimeType};base64,${image.data}`, detail: "high" }
+    ] }],
+    text: { format: { type: "json_schema", name: "gamevision_assistant_reply", strict: true, schema: assistantSchema } }
+  });
+}
+
+export async function askWithGemini(image, instruction) {
+  if (!GEMINI_API_KEY) throw new Error("Gemini is not configured");
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
+  const response = await fetch(`${url}?key=${encodeURIComponent(GEMINI_API_KEY)}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    signal: AbortSignal.timeout(15000),
+    body: JSON.stringify({
+      contents: [{ parts: [
+        { text: buildAssistantPrompt(instruction) },
+        { inline_data: { mime_type: image.mimeType, data: image.data } }
+      ] }],
+      generationConfig: {
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: "OBJECT",
+          properties: { answer: { type: "STRING" }, confidence: { type: "NUMBER" } },
+          required: ["answer", "confidence"]
+        },
+        temperature: 0.1
+      }
+    })
+  });
+  if (!response.ok) {
+    const detail = await response.text();
+    console.error("Gemini assistant request failed", response.status, detail.slice(0, 500));
+    throw new Error(`Gemini upstream error ${response.status}`);
+  }
   const data = await response.json();
   const text = data?.candidates?.[0]?.content?.parts?.find((part) => typeof part.text === "string")?.text;
   return parseJsonText(text, "Gemini");
