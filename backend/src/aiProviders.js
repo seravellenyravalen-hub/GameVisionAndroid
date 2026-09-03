@@ -1,14 +1,23 @@
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY?.trim() || "";
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-5.6-sol";
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY?.trim() || "";
 const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3.8-flash";
 
 export const providerStatus = {
-  openaiConfigured: Boolean(OPENAI_API_KEY),
+  openaiConfigured: OPENAI_API_KEY.length > 0,
   openaiModel: OPENAI_MODEL,
-  geminiConfigured: Boolean(GEMINI_API_KEY),
+  geminiConfigured: GEMINI_API_KEY.length > 0,
   geminiModel: GEMINI_MODEL
 };
+
+console.log("GameVision AI configuration:", {
+  openaiConfigured: providerStatus.openaiConfigured,
+  openaiKeyLength: OPENAI_API_KEY.length,
+  geminiConfigured: providerStatus.geminiConfigured,
+  geminiKeyLength: GEMINI_API_KEY.length,
+  openaiModel: OPENAI_MODEL,
+  geminiModel: GEMINI_MODEL
+});
 
 const providerSchema = {
   type: "object",
