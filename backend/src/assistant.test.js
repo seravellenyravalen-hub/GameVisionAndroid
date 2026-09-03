@@ -19,6 +19,9 @@ test("automation prompt is game agnostic and one-step", () => {
   assert.match(prompt, /TAP/);
   assert.match(prompt, /SWIPE/);
   assert.match(prompt, /DOUBLE_TAP/);
+  assert.match(prompt, /PINCH_IN/);
+  assert.match(prompt, /PINCH_OUT/);
+  assert.match(prompt, /TWO_FINGER_SWIPE/);
   assert.match(prompt, /TYPE_TEXT/);
   assert.match(prompt, /GLOBAL ACTIONS/i);
 });
@@ -39,6 +42,9 @@ test("normalizes expanded touch, text and global actions", () => {
   assert.equal(normalizeAction({ type: "TAP", x: 100, y: 200, confidence: 40 }).type, "STOP");
   assert.equal(normalizeAction({ type: "SWIPE", x: 100, y: 200, x2: 700, y2: 200, confidence: 90 }).type, "SWIPE");
   assert.equal(normalizeAction({ type: "DOUBLE_TAP", x: 500, y: 500, confidence: 90 }).type, "DOUBLE_TAP");
+  assert.equal(normalizeAction({ type: "PINCH_IN", x: 500, y: 500, x2: 700, y2: 500, confidence: 90 }).type, "PINCH_IN");
+  assert.equal(normalizeAction({ type: "PINCH_OUT", x: 500, y: 500, x2: 700, y2: 500, confidence: 90 }).type, "PINCH_OUT");
+  assert.equal(normalizeAction({ type: "TWO_FINGER_SWIPE", x: 300, y: 500, x2: 700, y2: 500, confidence: 90 }).type, "TWO_FINGER_SWIPE");
   assert.equal(normalizeAction({ type: "TYPE_TEXT", text: "hello", confidence: 90 }).text, "hello");
   assert.equal(normalizeAction({ type: "BACK", confidence: 95 }).type, "BACK");
   assert.equal(normalizeAction({ type: "HOME", confidence: 95 }).type, "HOME");
