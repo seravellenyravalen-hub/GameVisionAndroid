@@ -60,6 +60,7 @@ Supported coordinate actions:
 - LONG_PRESS: hold one normalized coordinate for durationMs.
 - SWIPE: move from (x,y) to (x2,y2) over durationMs.
 - DRAG: same coordinate model as SWIPE, used when a held drag is needed.
+- TYPE_TEXT: put the supplied text into the currently focused editable field using Android accessibility semantics.
 - WAIT: wait for a visible transition or animation.
 
 Supported global actions:
@@ -72,6 +73,8 @@ Supported global actions:
 GLOBAL ACTIONS are only valid when the Android accessibility service reports that the requested system action is available.
 
 Coordinates MUST use the full-screen coordinate system from 0 to 1000 on both axes, regardless of image resolution. Do not invent coordinates. Only interact with controls/areas that are visibly supported by the current images.
+
+For TYPE_TEXT, provide the exact intended text in the text field. Use it only when the screen shows an editable field or the previous action has focused one.
 
 The user goal may be broad. Work it out from the screen instead of assuming a game type. Prefer an action that advances the goal. Do not stop merely because the task is multi-step; continue one verified action at a time. Use STOP only when the goal is complete, the screen is genuinely blocked/unexpected, the requested capability is unavailable, or evidence is insufficient to choose a safe action.
 
@@ -91,7 +94,7 @@ export function normalizeAssistantReply(raw) {
 }
 
 export function normalizeAction(raw) {
-  const allowed = new Set(["TAP", "DOUBLE_TAP", "LONG_PRESS", "SWIPE", "DRAG", "WAIT", "BACK", "HOME", "RECENTS", "NOTIFICATIONS", "QUICK_SETTINGS", "STOP"]);
+  const allowed = new Set(["TAP", "DOUBLE_TAP", "LONG_PRESS", "SWIPE", "DRAG", "TYPE_TEXT", "WAIT", "BACK", "HOME", "RECENTS", "NOTIFICATIONS", "QUICK_SETTINGS", "STOP"]);
   const type = allowed.has(String(raw?.type || "").toUpperCase()) ? String(raw.type).toUpperCase() : "STOP";
   const number = (value) => Math.min(1000, Math.max(0, Number(value) || 0));
   const durationMs = Math.min(5000, Math.max(100, Number(raw?.durationMs) || 600));
@@ -103,6 +106,7 @@ export function normalizeAction(raw) {
     y: number(raw?.y),
     x2: number(raw?.x2),
     y2: number(raw?.y2),
+    text: typeof raw?.text === "string" ? raw.text.slice(0, 1000) : "",
     durationMs,
     waitMs,
     reason: typeof raw?.reason === "string" ? raw.reason.trim().slice(0, 400) : "",
