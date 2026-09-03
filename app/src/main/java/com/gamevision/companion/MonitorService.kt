@@ -63,7 +63,7 @@ class MonitorService : Service(), TextToSpeech.OnInitListener {
     private var tts: TextToSpeech? = null
 
     private var serverUrl =
-        "https://gamevision-monitor-0s07wr.v2.appdeploy.ai"
+        "https://gamevision-api-production.up.railway.app"
 
     private var lastUploadAt = 0L
 
