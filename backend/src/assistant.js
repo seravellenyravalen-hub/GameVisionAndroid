@@ -2,7 +2,7 @@ const FALLBACK_ANSWER = "I could not determine that from the available context."
 
 const VISUAL_PATTERNS = [
   /\b(screen|display|visible|see|look|shown|picture|image|button|menu|icon|text|page|window|game|level|player|object)\b/i,
-  /\b(tap|click|press|hold|swipe|scroll|drag|drop|move|open|close|select|choose|type|enter|go back|go home|recents|notification|quick settings)\b/i,
+  /\b(tap|click|press|hold|swipe|scroll|drag|drop|move|open|close|select|choose|type|enter|go back|go home|recents|notification|quick settings|zoom|pinch)\b/i,
   /\b(do|perform|execute|control|play|start|stop)\b.*\b(it|this|that|game|app|screen|button|menu)\b/i
 ];
 
@@ -37,9 +37,9 @@ export function buildAssistantPrompt(instruction, history = [], hasVision = true
 
 ${visionState}
 
-Be active and useful. Do not respond with a generic refusal when the request can be answered from the available context. If the request requires a screen fact and no current screen is supplied, clearly say that a fresh screen is needed. If a task requires an action, explain the next useful step rather than pretending it was completed.
+Be active and useful. If the user asks you to perform an action on the device, treat it as an execution request; the Android companion may route action commands to its autonomous controller. Do not merely explain how the user could perform the action when the requested action is supported. Do not respond with a generic refusal when the request can be answered or executed from the available context. If the request requires a screen fact and no current screen is supplied, say that a fresh screen is needed. Never pretend an action was completed unless the platform reports success.
 
-Never invent a visual fact, hidden game state, or completed action. Never claim success unless the platform reports success.
+Never invent a visual fact, hidden game state, or completed action.
 
 RECENT CONVERSATION:
 ${historyText(history)}
@@ -52,31 +52,32 @@ export function buildAutomationPrompt(goal, history = []) {
   const request = String(goal || "").trim().slice(0, 1200);
   return `You are GameVision's active generic visual-control planner. The user has explicitly enabled autonomous control. You are NOT specialized for football or any other genre. Infer the current interface only from the supplied screen images and the user's goal.
 
-Return exactly ONE next action. Do not plan a long blind sequence. Android will execute it, capture a newer screen, and ask you for the next action.
+Return exactly ONE next action. Android will execute it, capture a newer screen, and ask you for the next action. Continue until the user's goal is complete; do not stop merely because the goal requires several actions.
 
-Supported coordinate actions:
-- TAP: tap one normalized screen coordinate.
+Supported touch actions:
+- TAP: one normalized coordinate.
 - DOUBLE_TAP: two taps at the same normalized coordinate.
 - LONG_PRESS: hold one normalized coordinate for durationMs.
 - SWIPE: move from (x,y) to (x2,y2) over durationMs.
 - DRAG: same coordinate model as SWIPE, used when a held drag is needed.
+- PINCH_IN: two-finger pinch toward the center. Use (x,y) as center and (x2,y2) as an outer point describing the starting radius.
+- PINCH_OUT: two-finger pinch away from the center. Use (x,y) as center and (x2,y2) as an outer point describing the ending radius.
+- TWO_FINGER_SWIPE: two-finger parallel swipe. Use (x,y) as the start center and (x2,y2) as the end center.
 - TYPE_TEXT: put the supplied text into the currently focused editable field using Android accessibility semantics.
 - WAIT: wait for a visible transition or animation.
 
-Supported global actions:
-- BACK: Android Back.
-- HOME: Android Home.
-- RECENTS: Android recent-apps overview.
-- NOTIFICATIONS: open notifications.
-- QUICK_SETTINGS: open Quick Settings.
-
-GLOBAL ACTIONS are only valid when the Android accessibility service reports that the requested system action is available.
+Supported system actions:
+- BACK
+- HOME
+- RECENTS
+- NOTIFICATIONS
+- QUICK_SETTINGS
 
 Coordinates MUST use the full-screen coordinate system from 0 to 1000 on both axes, regardless of image resolution. Do not invent coordinates. Only interact with controls/areas that are visibly supported by the current images.
 
-For TYPE_TEXT, provide the exact intended text in the text field. Use it only when the screen shows an editable field or the previous action has focused one.
+For TYPE_TEXT, provide the exact intended text. Use it only when the screen shows an editable field or the previous action has focused one.
 
-The user goal may be broad. Work it out from the screen instead of assuming a game type. Prefer an action that advances the goal. Do not stop merely because the task is multi-step; continue one verified action at a time. Use STOP only when the goal is complete, the screen is genuinely blocked/unexpected, the requested capability is unavailable, or evidence is insufficient to choose a safe action.
+Prefer an action that advances the goal. If the user says "tap", "click", "press", "open", "swipe", "scroll", "drag", "zoom", "type", or similar, perform the requested action rather than replying with instructions. If the target is visible, choose it. If the target is not visible, use an appropriate navigation/scroll action to find it. Use STOP only when the goal is complete, the screen is genuinely blocked/unexpected, the requested capability is unavailable, or evidence is insufficient to choose a safe action.
 
 RECENT CONTEXT:
 ${historyText(history)}
@@ -94,7 +95,7 @@ export function normalizeAssistantReply(raw) {
 }
 
 export function normalizeAction(raw) {
-  const allowed = new Set(["TAP", "DOUBLE_TAP", "LONG_PRESS", "SWIPE", "DRAG", "TYPE_TEXT", "WAIT", "BACK", "HOME", "RECENTS", "NOTIFICATIONS", "QUICK_SETTINGS", "STOP"]);
+  const allowed = new Set(["TAP", "DOUBLE_TAP", "LONG_PRESS", "SWIPE", "DRAG", "PINCH_IN", "PINCH_OUT", "TWO_FINGER_SWIPE", "TYPE_TEXT", "WAIT", "BACK", "HOME", "RECENTS", "NOTIFICATIONS", "QUICK_SETTINGS", "STOP"]);
   const type = allowed.has(String(raw?.type || "").toUpperCase()) ? String(raw.type).toUpperCase() : "STOP";
   const number = (value) => Math.min(1000, Math.max(0, Number(value) || 0));
   const durationMs = Math.min(5000, Math.max(100, Number(raw?.durationMs) || 600));
@@ -114,7 +115,7 @@ export function normalizeAction(raw) {
     verify: raw?.verify !== false,
     stopReason: typeof raw?.stopReason === "string" ? raw.stopReason.trim().slice(0, 400) : ""
   };
-  if (confidence < 70 && type !== "STOP") action.type = "STOP";
+  if (confidence < 60 && type !== "STOP") action.type = "STOP";
   return action;
 }
 
