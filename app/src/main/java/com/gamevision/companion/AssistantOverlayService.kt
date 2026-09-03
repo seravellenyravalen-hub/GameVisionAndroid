@@ -42,7 +42,7 @@ class AssistantOverlayService : Service(), TextToSpeech.OnInitListener {
 
     private val executor = Executors.newSingleThreadExecutor()
     private val handler = Handler(Looper.getMainLooper())
-    private var serverUrl = "https://gamevision-api-production.up.railway.app"
+    private var serverUrl = "https://gamevision-api-live-production.up.railway.app"
     private var wm: WindowManager? = null
     private var bubble: TextView? = null
     private var panel: LinearLayout? = null
@@ -52,18 +52,13 @@ class AssistantOverlayService : Service(), TextToSpeech.OnInitListener {
     private var input: EditText? = null
     private var answerView: TextView? = null
 
-    override fun onCreate() {
-        super.onCreate()
-        createChannel()
-        tts = TextToSpeech(this, this)
-    }
+    override fun onCreate() { super.onCreate(); createChannel(); tts = TextToSpeech(this, this) }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_START -> {
                 serverUrl = intent.getStringExtra(EXTRA_SERVER_URL)?.trim()?.removeSuffix("/") ?: serverUrl
-                if (Build.VERSION.SDK_INT >= 29) startForeground(NOTIFICATION_ID, notification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
-                else startForeground(NOTIFICATION_ID, notification())
+                if (Build.VERSION.SDK_INT >= 29) startForeground(NOTIFICATION_ID, notification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE) else startForeground(NOTIFICATION_ID, notification())
                 showBubble()
             }
             ACTION_STOP -> stopSelf()
@@ -75,33 +70,22 @@ class AssistantOverlayService : Service(), TextToSpeech.OnInitListener {
         if (bubble != null) return
         wm = getSystemService(WINDOW_SERVICE) as WindowManager
         val b = TextView(this).apply {
-            text = "G/V"
-            textSize = 12f
-            gravity = Gravity.CENTER
-            setTextColor(Color.BLACK)
-            typeface = android.graphics.Typeface.DEFAULT_BOLD
-            background = rounded(0xFFB8FF3D.toInt(), 50)
-            elevation = 12f
-            setOnClickListener { togglePanel() }
-            setOnTouchListener(DragTouchListener())
+            text = "G/V"; textSize = 12f; gravity = Gravity.CENTER; setTextColor(Color.BLACK); typeface = android.graphics.Typeface.DEFAULT_BOLD
+            background = rounded(0xFFB8FF3D.toInt(), 50); elevation = 12f; setOnClickListener { togglePanel() }; setOnTouchListener(DragTouchListener())
         }
-        val params = WindowManager.LayoutParams(dp(54), dp(54), WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY, WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE, PixelFormat.TRANSLUCENT).apply {
-            gravity = Gravity.TOP or Gravity.START; x = dp(18); y = dp(180)
-        }
+        val params = WindowManager.LayoutParams(dp(54), dp(54), WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY, WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE, PixelFormat.TRANSLUCENT).apply { gravity = Gravity.TOP or Gravity.START; x = dp(18); y = dp(180) }
         try { wm?.addView(b, params); bubble = b; bubbleParams = params } catch (_: Exception) { stopSelf() }
     }
 
     private fun togglePanel() {
         if (panel != null) { removePanel(); return }
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL; setPadding(dp(14), dp(12), dp(14), dp(12)); background = rounded(0xF010141B.toInt(), 22); elevation = 18f
-        }
+        val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(14), dp(12), dp(14), dp(12)); background = rounded(0xF010141B.toInt(), 22); elevation = 18f }
         val header = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
         val title = TextView(this).apply { text = "GAMEVISION AI"; textSize = 14f; setTextColor(0xFFF4F7FA.toInt()); typeface = android.graphics.Typeface.DEFAULT_BOLD }
         val close = TextView(this).apply { text = "×"; textSize = 22f; setTextColor(0xFF8D9AAA.toInt()); gravity = Gravity.CENTER; setOnClickListener { removePanel() } }
         header.addView(title, LinearLayout.LayoutParams(0, dp(34), 1f)); header.addView(close, LinearLayout.LayoutParams(dp(36), dp(34))); root.addView(header)
         root.addView(TextView(this).apply { text = "Ask about what is visible on screen"; textSize = 10f; setTextColor(0xFF8D9AAA.toInt()); setPadding(0, 0, 0, dp(8)) })
-        input = EditText(this).apply { hint = "e.g. Check the score and minute"; textSize = 13f; setTextColor(0xFFF4F7FA.toInt()); setHintTextColor(0xFF687586.toInt()); setSingleLine(false); maxLines = 3; background = rounded(0xFF171D26.toInt(), 14); setPadding(dp(12), dp(8), dp(12), dp(8)) }
+        input = EditText(this).apply { hint = "e.g. Check the score and minute"; textSize = 13f; setTextColor(0xFFF4F7FA.toInt()); setHintTextColor(0xFF687586.toInt()); setSingleLine(false); maxLines = 3; background = rounded(0xFF171D26.toInt(), 14); setPadding(dp(12), dp(8), dp(12), dp(8)); isFocusableInTouchMode = true }
         root.addView(input, LinearLayout.LayoutParams(-1, dp(70)))
         val actions = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
         actions.addView(actionButton("MIC") { startVoice() }, LinearLayout.LayoutParams(0, dp(42), 1f).apply { setMargins(0, dp(8), dp(6), 0) })
@@ -109,15 +93,13 @@ class AssistantOverlayService : Service(), TextToSpeech.OnInitListener {
         root.addView(actions)
         answerView = TextView(this).apply { text = "Ready. Tap MIC or type a question."; textSize = 12f; setTextColor(0xFFE7ECF2.toInt()); setPadding(0, dp(12), 0, 0) }
         root.addView(answerView)
-        val p = WindowManager.LayoutParams(dp(310), WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY, WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE, PixelFormat.TRANSLUCENT).apply {
-            gravity = Gravity.TOP or Gravity.START; x = max(8, (bubbleParams?.x ?: 18) - dp(120)); y = max(dp(70), (bubbleParams?.y ?: 180) - dp(20))
+        val p = WindowManager.LayoutParams(dp(310), WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY, WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL, PixelFormat.TRANSLUCENT).apply {
+            gravity = Gravity.TOP or Gravity.START; x = max(8, (bubbleParams?.x ?: 18) - dp(120)); y = max(dp(70), (bubbleParams?.y ?: 180) - dp(20)); softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
         }
-        try { wm?.addView(root, p); panel = root } catch (_: Exception) { }
+        try { wm?.addView(root, p); panel = root; input?.requestFocus() } catch (_: Exception) { }
     }
 
-    private fun actionButton(label: String, click: () -> Unit) = TextView(this).apply {
-        text = label; textSize = 11f; gravity = Gravity.CENTER; setTextColor(0xFFB8FF3D.toInt()); typeface = android.graphics.Typeface.DEFAULT_BOLD; background = rounded(0x3326B500, 14); setOnClickListener { click() }
-    }
+    private fun actionButton(label: String, click: () -> Unit) = TextView(this).apply { text = label; textSize = 11f; gravity = Gravity.CENTER; setTextColor(0xFFB8FF3D.toInt()); typeface = android.graphics.Typeface.DEFAULT_BOLD; background = rounded(0x3326B500, 14); setOnClickListener { click() } }
 
     private fun ask(question: String) {
         val instruction = question.trim()
