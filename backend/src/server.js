@@ -40,10 +40,7 @@ function availableProvider() {
 }
 
 function frameAgeMs() { return latestFrame ? Math.max(0, Date.now() - latestFrame.capturedAt) : null; }
-
-function frameStatus() {
-  return { sequence: latestFrame?.sequence || 0, capturedAt: latestFrame?.capturedAt || null, ageMs: frameAgeMs(), fresh: Boolean(latestFrame && (Date.now() - latestFrame.capturedAt) <= MAX_FRAME_AGE_MS) };
-}
+function frameStatus() { return { sequence: latestFrame?.sequence || 0, capturedAt: latestFrame?.capturedAt || null, ageMs: frameAgeMs(), fresh: Boolean(latestFrame && (Date.now() - latestFrame.capturedAt) <= MAX_FRAME_AGE_MS) }; }
 
 function requireFreshFrame(res, minSequence = 0) {
   if (!latestFrame) { res.status(409).json({ error: "Waiting for the first screen capture", code: "FRAME_NEEDED", frame: frameStatus() }); return false; }
@@ -58,7 +55,6 @@ app.get("/health", (req, res) => {
 });
 
 app.get("/", (req, res) => res.json({ service: "GameVision API", status: "online", aiConfigured: providerStatus.openaiConfigured || providerStatus.geminiConfigured, openaiConfigured: providerStatus.openaiConfigured, geminiConfigured: providerStatus.geminiConfigured, primaryProvider: availableProvider(), openaiModel: providerStatus.openaiModel, geminiModel: providerStatus.geminiModel, frame: frameStatus() }));
-
 app.get("/api/frame-status", (req, res) => res.json(frameStatus()));
 
 app.post("/api/analyze-frame", async (req, res) => {
@@ -98,9 +94,9 @@ app.post("/api/ask", async (req, res) => {
     const images = hasFrame ? latestFrame.images : [];
     let raw = null; let provider = null;
     if (providerStatus.openaiConfigured && Date.now() >= openaiCooldownUntil) {
-      try { raw = await askWithOpenAI(images, instruction, history); provider = "openai"; } catch (error) { rememberOpenAIError(error); console.error("OpenAI assistant unavailable:", error?.message || error); }
+      try { raw = await askWithOpenAI(images, instruction, history, hasFreshFrame); provider = "openai"; } catch (error) { rememberOpenAIError(error); console.error("OpenAI assistant unavailable:", error?.message || error); }
     }
-    if (!raw && providerStatus.geminiConfigured) { raw = await askWithGemini(images, instruction, history); provider = "gemini"; }
+    if (!raw && providerStatus.geminiConfigured) { raw = await askWithGemini(images, instruction, history, hasFreshFrame); provider = "gemini"; }
     if (!raw) return res.status(502).json({ error: "Assistant AI unavailable", code: "AI_UPSTREAM_ERROR" });
     return res.json({ reply: normalizeAssistantReply(raw), provider, visionUsed: images.length > 0, visionFresh: hasFreshFrame, frame: frameStatus(), instruction: buildAssistantPrompt(instruction, history, images.length > 0, hasFreshFrame).split("CURRENT USER MESSAGE:\n")[1] || instruction });
   } catch (error) { console.error("GameVision assistant error:", error?.message || error); return res.status(502).json({ error: "Unable to answer instruction", code: "ASSISTANT_FAILED" }); }
