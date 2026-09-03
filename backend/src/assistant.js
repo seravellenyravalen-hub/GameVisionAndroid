@@ -66,7 +66,7 @@ Supported touch actions:
 - TYPE_TEXT: put the supplied text into the currently focused editable field using Android accessibility semantics.
 - WAIT: wait for a visible transition or animation.
 
-Supported system actions:
+GLOBAL ACTIONS:
 - BACK
 - HOME
 - RECENTS
@@ -101,20 +101,7 @@ export function normalizeAction(raw) {
   const durationMs = Math.min(5000, Math.max(100, Number(raw?.durationMs) || 600));
   const waitMs = Math.min(10000, Math.max(0, Number(raw?.waitMs) || 800));
   const confidence = Math.min(100, Math.max(0, Number(raw?.confidence) || 0));
-  const action = {
-    type,
-    x: number(raw?.x),
-    y: number(raw?.y),
-    x2: number(raw?.x2),
-    y2: number(raw?.y2),
-    text: typeof raw?.text === "string" ? raw.text.slice(0, 1000) : "",
-    durationMs,
-    waitMs,
-    reason: typeof raw?.reason === "string" ? raw.reason.trim().slice(0, 400) : "",
-    confidence,
-    verify: raw?.verify !== false,
-    stopReason: typeof raw?.stopReason === "string" ? raw.stopReason.trim().slice(0, 400) : ""
-  };
+  const action = { type, x: number(raw?.x), y: number(raw?.y), x2: number(raw?.x2), y2: number(raw?.y2), text: typeof raw?.text === "string" ? raw.text.slice(0, 1000) : "", durationMs, waitMs, reason: typeof raw?.reason === "string" ? raw.reason.trim().slice(0, 400) : "", confidence, verify: raw?.verify !== false, stopReason: typeof raw?.stopReason === "string" ? raw.stopReason.trim().slice(0, 400) : "" };
   if (confidence < 60 && type !== "STOP") action.type = "STOP";
   return action;
 }
