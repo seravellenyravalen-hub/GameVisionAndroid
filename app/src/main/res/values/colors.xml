@@ -1,0 +1,12 @@
+<resources>
+    <color name="gv_bg">#070A0F</color>
+    <color name="gv_surface">#10151D</color>
+    <color name="gv_surface_2">#151C26</color>
+    <color name="gv_stroke">#27313D</color>
+    <color name="gv_text">#F4F7FA</color>
+    <color name="gv_muted">#8D9AAA</color>
+    <color name="gv_lime">#B8FF3D</color>
+    <color name="gv_lime_dim">#263512</color>
+    <color name="gv_red">#FF5D67</color>
+    <color name="gv_green">#63E6A4</color>
+</resources>
