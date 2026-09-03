@@ -92,18 +92,17 @@ app.post("/api/ask", async (req, res) => {
     if (!providerStatus.openaiConfigured && !providerStatus.geminiConfigured) return res.status(503).json({ error: "AI analysis is not configured", code: "AI_NOT_CONFIGURED" });
     const history = normalizeHistory(req.body?.messages);
     const visualRequest = isScreenDependentInstruction(instruction);
+    const hasFrame = Boolean(latestFrame);
     const hasFreshFrame = Boolean(latestFrame && Date.now() - latestFrame.capturedAt <= MAX_FRAME_AGE_MS);
-    if (visualRequest && !hasFreshFrame) {
-      return res.status(409).json({ error: "This request needs a fresh screen capture", code: "FRAME_NEEDED", frame: frameStatus() });
-    }
-    const images = hasFreshFrame ? latestFrame.images : [];
+    if (visualRequest && !hasFrame) return res.status(409).json({ error: "Waiting for the first screen capture", code: "FRAME_NEEDED", frame: frameStatus() });
+    const images = hasFrame ? latestFrame.images : [];
     let raw = null; let provider = null;
     if (providerStatus.openaiConfigured && Date.now() >= openaiCooldownUntil) {
       try { raw = await askWithOpenAI(images, instruction, history); provider = "openai"; } catch (error) { rememberOpenAIError(error); console.error("OpenAI assistant unavailable:", error?.message || error); }
     }
     if (!raw && providerStatus.geminiConfigured) { raw = await askWithGemini(images, instruction, history); provider = "gemini"; }
     if (!raw) return res.status(502).json({ error: "Assistant AI unavailable", code: "AI_UPSTREAM_ERROR" });
-    return res.json({ reply: normalizeAssistantReply(raw), provider, visionUsed: images.length > 0, frame: frameStatus(), instruction: buildAssistantPrompt(instruction, history, images.length > 0).split("CURRENT USER MESSAGE:\n")[1] || instruction });
+    return res.json({ reply: normalizeAssistantReply(raw), provider, visionUsed: images.length > 0, visionFresh: hasFreshFrame, frame: frameStatus(), instruction: buildAssistantPrompt(instruction, history, images.length > 0, hasFreshFrame).split("CURRENT USER MESSAGE:\n")[1] || instruction });
   } catch (error) { console.error("GameVision assistant error:", error?.message || error); return res.status(502).json({ error: "Unable to answer instruction", code: "ASSISTANT_FAILED" }); }
 });
 
