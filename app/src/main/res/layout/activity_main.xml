@@ -226,7 +226,7 @@
             android:background="@drawable/bg_card"
             android:orientation="vertical"
             android:padding="15dp">
-            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="PRIVACY & CONTROL" android:textColor="@color/gv_muted" android:textSize="9sp" android:textStyle="bold" android:letterSpacing="0.1" />
+            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="PRIVACY &amp; CONTROL" android:textColor="@color/gv_muted" android:textSize="9sp" android:textStyle="bold" android:letterSpacing="0.1" />
             <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="7dp" android:text="GameVision captures only after you approve Android screen sharing. Frames are sent to your configured analysis server. Stop monitoring to end capture. No game memory access or gameplay automation is used."
                 android:textColor="@color/gv_muted" android:textSize="11sp" android:lineSpacingExtra="2dp" />
         </LinearLayout>
