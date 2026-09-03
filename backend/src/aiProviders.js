@@ -24,79 +24,56 @@ console.log("GameVision AI configuration:", {
 export const screenSchema = {
   type: "object",
   properties: {
-    summary: { type: "string" },
-    state: { type: "string" },
-    confidence: { type: "number" },
-    elements: { type: "array", items: { type: "object", properties: {
-      label: { type: "string" }, x: { type: "number" }, y: { type: "number" }, width: { type: "number" }, height: { type: "number" }, confidence: { type: "number" }
-    }, required: ["label", "x", "y", "width", "height", "confidence"], additionalProperties: false } },
+    summary: { type: "string" }, state: { type: "string" }, confidence: { type: "number" },
+    elements: { type: "array", items: { type: "object", properties: { label: { type: "string" }, x: { type: "number" }, y: { type: "number" }, width: { type: "number" }, height: { type: "number" }, confidence: { type: "number" } }, required: ["label", "x", "y", "width", "height", "confidence"], additionalProperties: false } },
     notes: { type: "array", items: { type: "string" } }
   },
-  required: ["summary", "state", "confidence", "elements", "notes"],
-  additionalProperties: false
+  required: ["summary", "state", "confidence", "elements", "notes"], additionalProperties: false
 };
 
 export const assistantSchema = {
   type: "object",
   properties: { answer: { type: "string" }, confidence: { type: "number" } },
-  required: ["answer", "confidence"],
-  additionalProperties: false
+  required: ["answer", "confidence"], additionalProperties: false
 };
 
-const ACTION_TYPES = ["TAP", "DOUBLE_TAP", "LONG_PRESS", "SWIPE", "DRAG", "TYPE_TEXT", "WAIT", "BACK", "HOME", "RECENTS", "NOTIFICATIONS", "QUICK_SETTINGS", "STOP"];
+const ACTION_TYPES = ["TAP", "DOUBLE_TAP", "LONG_PRESS", "SWIPE", "DRAG", "PINCH_IN", "PINCH_OUT", "TWO_FINGER_SWIPE", "TYPE_TEXT", "WAIT", "BACK", "HOME", "RECENTS", "NOTIFICATIONS", "QUICK_SETTINGS", "STOP"];
 
 export const actionSchema = {
   type: "object",
   properties: {
     type: { type: "string", enum: ACTION_TYPES },
     x: { type: "number" }, y: { type: "number" }, x2: { type: "number" }, y2: { type: "number" }, text: { type: "string" },
-    durationMs: { type: "number" }, waitMs: { type: "number" },
-    reason: { type: "string" }, confidence: { type: "number" }, verify: { type: "boolean" }, stopReason: { type: "string" }
+    durationMs: { type: "number" }, waitMs: { type: "number" }, reason: { type: "string" }, confidence: { type: "number" }, verify: { type: "boolean" }, stopReason: { type: "string" }
   },
-  required: ["type", "x", "y", "x2", "y2", "text", "durationMs", "waitMs", "reason", "confidence", "verify", "stopReason"],
-  additionalProperties: false
+  required: ["type", "x", "y", "x2", "y2", "text", "durationMs", "waitMs", "reason", "confidence", "verify", "stopReason"], additionalProperties: false
 };
 
-export const analysisPrompt = `You are GameVision, a generic visual screen analyzer. Analyze the supplied screen images only. Do not assume the screen is a football game, sports game, or any particular genre. The full image is the coordinate reference; region images are higher-detail views of parts of that same screen.
-
-Describe only what is visibly supported. Identify useful visible UI/game elements with approximate normalized bounding boxes from 0 to 1000. Never invent hidden state, scores, controls, or text. Keep the summary factual and concise.`;
+export const analysisPrompt = `You are GameVision, a generic visual screen analyzer. Analyze the supplied screen images only. Do not assume the screen is a football game, sports game, or any particular genre. The full image is the coordinate reference; region images are higher-detail views of parts of that same screen.\n\nDescribe only what is visibly supported. Identify useful visible UI/game elements with approximate normalized bounding boxes from 0 to 1000. Never invent hidden state, scores, controls, or text. Keep the summary factual and concise.`;
 
 function parseJsonText(text, provider) {
   if (!text) throw new Error(`${provider} returned no JSON text`);
   try { return JSON.parse(text); } catch {
-    const fenced = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/i)?.[1];
+    const fenced = text.match(/```(?:json)?\\s*([\\s\\S]*?)\\s*```/i)?.[1];
     if (fenced) return JSON.parse(fenced);
     throw new Error(`${provider} returned invalid JSON`);
   }
 }
 
-function imagesToOpenAIContent(images) {
-  return (Array.isArray(images) ? images : []).map((image) => ({ type: "input_image", image_url: `data:${image.mimeType};base64,${image.data}`, detail: "high" }));
-}
-
-function imagesToGeminiParts(images) {
-  return (Array.isArray(images) ? images : []).map((image) => ({ inline_data: { mime_type: image.mimeType, data: image.data } }));
-}
+function imagesToOpenAIContent(images) { return (Array.isArray(images) ? images : []).map((image) => ({ type: "input_image", image_url: `data:${image.mimeType};base64,${image.data}`, detail: "high" })); }
+function imagesToGeminiParts(images) { return (Array.isArray(images) ? images : []).map((image) => ({ inline_data: { mime_type: image.mimeType, data: image.data } })); }
 
 async function postOpenAI(body) {
-  const response = await fetch("https://api.openai.com/v1/responses", {
-    method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${OPENAI_API_KEY}` }, signal: AbortSignal.timeout(20000), body: JSON.stringify(body)
-  });
+  const response = await fetch("https://api.openai.com/v1/responses", { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${OPENAI_API_KEY}` }, signal: AbortSignal.timeout(20000), body: JSON.stringify(body) });
   if (!response.ok) { const detail = await response.text(); console.error("OpenAI request failed", response.status, detail.slice(0, 500)); throw new Error(`OpenAI upstream error ${response.status}`); }
-  const data = await response.json();
-  return parseJsonText(data?.output_text, "OpenAI");
+  const data = await response.json(); return parseJsonText(data?.output_text, "OpenAI");
 }
 
 async function postGemini(prompt, images, schema, temperature = 0.1) {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
-  const response = await fetch(`${url}?key=${encodeURIComponent(GEMINI_API_KEY)}`, {
-    method: "POST", headers: { "Content-Type": "application/json" }, signal: AbortSignal.timeout(20000),
-    body: JSON.stringify({ contents: [{ parts: [{ text: prompt }, ...imagesToGeminiParts(images)] }], generationConfig: { responseMimeType: "application/json", responseSchema: schema, temperature } })
-  });
+  const response = await fetch(`${url}?key=${encodeURIComponent(GEMINI_API_KEY)}`, { method: "POST", headers: { "Content-Type": "application/json" }, signal: AbortSignal.timeout(20000), body: JSON.stringify({ contents: [{ parts: [{ text: prompt }, ...imagesToGeminiParts(images)] }], generationConfig: { responseMimeType: "application/json", responseSchema: schema, temperature } }) });
   if (!response.ok) { const detail = await response.text(); console.error("Gemini request failed", response.status, detail.slice(0, 500)); throw new Error(`Gemini upstream error ${response.status}`); }
-  const data = await response.json();
-  const text = data?.candidates?.[0]?.content?.parts?.find((part) => typeof part.text === "string")?.text;
-  return parseJsonText(text, "Gemini");
+  const data = await response.json(); const text = data?.candidates?.[0]?.content?.parts?.find((part) => typeof part.text === "string")?.text; return parseJsonText(text, "Gemini");
 }
 
 export async function analyzeWithOpenAI(images) {
@@ -106,9 +83,7 @@ export async function analyzeWithOpenAI(images) {
 
 export async function analyzeWithGemini(images) {
   if (!GEMINI_API_KEY) throw new Error("Gemini is not configured");
-  return postGemini(analysisPrompt, images, {
-    type: "OBJECT", properties: { summary: { type: "STRING" }, state: { type: "STRING" }, confidence: { type: "NUMBER" }, elements: { type: "ARRAY", items: { type: "OBJECT", properties: { label: { type: "STRING" }, x: { type: "NUMBER" }, y: { type: "NUMBER" }, width: { type: "NUMBER" }, height: { type: "NUMBER" }, confidence: { type: "NUMBER" } }, required: ["label", "x", "y", "width", "height", "confidence"] } }, notes: { type: "ARRAY", items: { type: "STRING" } } }, required: ["summary", "state", "confidence", "elements", "notes"]
-  });
+  return postGemini(analysisPrompt, images, { type: "OBJECT", properties: { summary: { type: "STRING" }, state: { type: "STRING" }, confidence: { type: "NUMBER" }, elements: { type: "ARRAY", items: { type: "OBJECT", properties: { label: { type: "STRING" }, x: { type: "NUMBER" }, y: { type: "NUMBER" }, width: { type: "NUMBER" }, height: { type: "NUMBER" }, confidence: { type: "NUMBER" } }, required: ["label", "x", "y", "width", "height", "confidence"] } }, notes: { type: "ARRAY", items: { type: "STRING" } } }, required: ["summary", "state", "confidence", "elements", "notes"] });
 }
 
 export async function askWithOpenAI(images, instruction, history = [], visionFresh = true) {
