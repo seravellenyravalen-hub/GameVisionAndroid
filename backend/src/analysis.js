@@ -7,111 +7,67 @@ function clamp(value, min, max) {
 }
 
 export function normalizeProviderResult(raw, provider) {
-  const homeScore = Number.isInteger(raw?.homeScore) && raw.homeScore >= 0 ? raw.homeScore : null;
-  const awayScore = Number.isInteger(raw?.awayScore) && raw.awayScore >= 0 ? raw.awayScore : null;
-  const confidence = clamp(Number(raw?.confidence) || 0, 0, 100);
-  const notes = Array.isArray(raw?.notes)
-    ? raw.notes.filter((item) => typeof item === "string" && item.trim()).map((item) => item.trim()).slice(0, 5)
+  const elements = Array.isArray(raw?.elements)
+    ? raw.elements.map((item) => ({
+        label: cleanText(item?.label),
+        x: clamp(Number(item?.x) || 0, 0, 1000),
+        y: clamp(Number(item?.y) || 0, 0, 1000),
+        width: clamp(Number(item?.width) || 0, 0, 1000),
+        height: clamp(Number(item?.height) || 0, 0, 1000),
+        confidence: clamp(Number(item?.confidence) || 0, 0, 100)
+      })).filter((item) => item.label).slice(0, 12)
     : [];
-
   return {
     provider,
-    homeTeam: cleanText(raw?.homeTeam),
-    awayTeam: cleanText(raw?.awayTeam),
-    homeScore,
-    awayScore,
-    minute: cleanText(raw?.minute),
-    event: cleanText(raw?.event),
-    confidence,
-    notes
+    summary: cleanText(raw?.summary) || "No clear screen summary.",
+    state: cleanText(raw?.state) || "unknown",
+    confidence: clamp(Number(raw?.confidence) || 0, 0, 100),
+    elements,
+    notes: Array.isArray(raw?.notes)
+      ? raw.notes.filter((item) => typeof item === "string" && item.trim()).map((item) => item.trim()).slice(0, 5)
+      : []
   };
-}
-
-function sameKnown(a, b) {
-  return a !== null && b !== null && a === b;
 }
 
 export function mergeProviderResults(openaiResult, geminiResult) {
   const primary = openaiResult || geminiResult;
   if (!primary) throw new Error("No provider result available");
-
   if (!openaiResult || !geminiResult) {
-    const available = primary;
-    const score = available.homeScore !== null && available.awayScore !== null
-      ? `${available.homeScore}-${available.awayScore}`
-      : "Unknown";
     return {
-      score,
-      confidence: Math.round(available.confidence),
+      summary: primary.summary,
+      state: primary.state,
+      confidence: Math.round(primary.confidence),
       verified: false,
-      verificationStatus: available.confidence >= 70 ? "LIKELY" : "LOW CONFIDENCE",
+      verificationStatus: primary.confidence >= 70 ? "LIKELY" : "LOW CONFIDENCE",
       risk: "review",
-      provider: available.provider,
+      provider: primary.provider,
       agreement: null,
-      notes: [
-        ...available.notes,
-        `${available.provider === "openai" ? "OpenAI" : "Gemini"} was the only available vision provider.`
-      ].slice(0, 5),
-      prediction: { home: 0, draw: 0, away: 0 },
-      details: {
-        homeTeam: available.homeTeam,
-        awayTeam: available.awayTeam,
-        minute: available.minute,
-        event: available.event
-      }
+      elements: primary.elements,
+      notes: [...primary.notes, `${primary.provider === "openai" ? "OpenAI" : "Gemini"} was the only available vision provider.`].slice(0, 5)
     };
   }
 
-  const scoreAgrees = sameKnown(openaiResult.homeScore, geminiResult.homeScore)
-    && sameKnown(openaiResult.awayScore, geminiResult.awayScore);
-  const minuteAgrees = openaiResult.minute !== null && geminiResult.minute !== null
-    ? openaiResult.minute === geminiResult.minute
-    : true;
-  const teamsAgree = (openaiResult.homeTeam === null || geminiResult.homeTeam === null || openaiResult.homeTeam === geminiResult.homeTeam)
-    && (openaiResult.awayTeam === null || geminiResult.awayTeam === null || openaiResult.awayTeam === geminiResult.awayTeam);
-  const agreement = scoreAgrees && minuteAgrees && teamsAgree;
-  const strongEvidence = openaiResult.confidence >= 80 && geminiResult.confidence >= 80;
-  const verified = agreement && strongEvidence && openaiResult.homeScore !== null && openaiResult.awayScore !== null && Boolean(openaiResult.minute || geminiResult.minute);
-
-  const score = scoreAgrees && openaiResult.homeScore !== null && openaiResult.awayScore !== null
-    ? `${openaiResult.homeScore}-${openaiResult.awayScore}`
-    : "Unknown";
-
+  const summaryAgree = openaiResult.summary.toLowerCase() === geminiResult.summary.toLowerCase();
+  const stateAgree = openaiResult.state === geminiResult.state || openaiResult.state === "unknown" || geminiResult.state === "unknown";
+  const agreement = summaryAgree || stateAgree;
   const confidence = agreement
-    ? Math.round((openaiResult.confidence * 0.6) + (geminiResult.confidence * 0.4))
+    ? Math.round(openaiResult.confidence * 0.6 + geminiResult.confidence * 0.4)
     : Math.min(openaiResult.confidence, geminiResult.confidence);
-
-  const status = verified
-    ? "VERIFIED"
-    : agreement && confidence >= 70
-      ? "LIKELY"
-      : agreement
-        ? "LOW CONFIDENCE"
-        : "UNVERIFIED";
-
-  const disagreementNote = agreement
-    ? null
-    : "Vision providers disagree on visible game details; review the frame before trusting the result.";
-
+  const verified = agreement && openaiResult.confidence >= 80 && geminiResult.confidence >= 80;
   return {
-    score,
+    summary: openaiResult.summary,
+    state: stateAgree ? (openaiResult.state === "unknown" ? geminiResult.state : openaiResult.state) : "uncertain",
     confidence,
     verified,
-    verificationStatus: status,
+    verificationStatus: verified ? "VERIFIED" : agreement && confidence >= 70 ? "LIKELY" : agreement ? "LOW CONFIDENCE" : "UNVERIFIED",
     risk: verified ? "low" : "review",
     provider: "openai+gemini",
     agreement,
+    elements: openaiResult.elements.length >= geminiResult.elements.length ? openaiResult.elements : geminiResult.elements,
     notes: [
-      ...(openaiResult.notes || []),
-      ...(geminiResult.notes || []),
-      ...(disagreementNote ? [disagreementNote] : ["OpenAI primary vision and Gemini independent cross-check agree on the visible result."])
-    ].filter((value, index, array) => array.indexOf(value) === index).slice(0, 5),
-    prediction: { home: 0, draw: 0, away: 0 },
-    details: {
-      homeTeam: openaiResult.homeTeam || geminiResult.homeTeam,
-      awayTeam: openaiResult.awayTeam || geminiResult.awayTeam,
-      minute: minuteAgrees ? (openaiResult.minute || geminiResult.minute) : null,
-      event: openaiResult.event || geminiResult.event
-    }
+      ...openaiResult.notes,
+      ...geminiResult.notes,
+      agreement ? "OpenAI primary vision and Gemini cross-check are broadly consistent." : "Vision providers disagree; review the current screen before trusting the result."
+    ].filter((value, index, array) => array.indexOf(value) === index).slice(0, 5)
   };
 }
