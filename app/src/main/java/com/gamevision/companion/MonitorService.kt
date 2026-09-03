@@ -47,11 +47,12 @@ class MonitorService : Service() {
 
     private val executor = Executors.newSingleThreadExecutor()
     private val running = AtomicBoolean(false)
+    private val uploadBusy = AtomicBoolean(false)
     private val mainHandler = Handler(Looper.getMainLooper())
     private var projection: MediaProjection? = null
     private var virtualDisplay: VirtualDisplay? = null
     private var reader: ImageReader? = null
-    private var serverUrl = "https://gamevision-api-live-production.up.railway.app"
+    private var serverUrl = "https://gamevision-api-v2-production.up.railway.app"
     private var lastUploadAt = 0L
     private var overlay: LinearLayout? = null
     private var wm: WindowManager? = null
@@ -82,7 +83,7 @@ class MonitorService : Service() {
         val metrics = resources.displayMetrics
         val width = metrics.widthPixels
         val height = metrics.heightPixels
-        reader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
+        reader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 3)
         reader?.setOnImageAvailableListener({ onFrame(it) }, mainHandler)
         virtualDisplay = projection?.createVirtualDisplay("GameVisionMonitor", width, height, metrics.densityDpi, DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, reader?.surface, null, null)
         running.set(true)
@@ -90,33 +91,48 @@ class MonitorService : Service() {
     }
 
     private fun onFrame(imageReader: ImageReader) {
-        if (!running.get() || System.currentTimeMillis() - lastUploadAt < 1500L) return
-        val image = runCatching { imageReader.acquireLatestImage() }.getOrNull() ?: return
+        if (!running.get() || System.currentTimeMillis() - lastUploadAt < 900L) return
+        if (!uploadBusy.compareAndSet(false, true)) return
+        val image = runCatching { imageReader.acquireLatestImage() }.getOrNull()
+        if (image == null) { uploadBusy.set(false); return }
+        val snapshot = try {
+            imageToBitmap(image)
+        } catch (e: Exception) {
+            null
+        } finally {
+            runCatching { image.close() }
+        }
+        if (snapshot == null) { uploadBusy.set(false); return }
         lastUploadAt = System.currentTimeMillis()
         executor.execute {
-            try { uploadFrame(imageToFrameSet(image)) }
+            try { uploadFrame(bitmapToFrameSet(snapshot)) }
             catch (e: Exception) { updateHud("OFFLINE", "${e.javaClass.simpleName}: ${e.message ?: "connection failed"}") }
-            finally { runCatching { image.close() } }
+            finally { snapshot.recycle(); uploadBusy.set(false) }
         }
     }
 
     private data class EncodedImage(val data: ByteArray, val role: String, val width: Int, val height: Int, val x: Int = 0, val y: Int = 0)
 
-    private fun imageToFrameSet(image: Image): List<EncodedImage> {
+    private fun imageToBitmap(image: Image): Bitmap {
         val plane = image.planes[0]
         val bitmapWidth = image.width + (plane.rowStride - plane.pixelStride * image.width) / plane.pixelStride
         val bitmap = Bitmap.createBitmap(bitmapWidth, image.height, Bitmap.Config.ARGB_8888)
-        plane.buffer.rewind(); bitmap.copyPixelsFromBuffer(plane.buffer)
-        val cropped = if (bitmap.width != image.width) Bitmap.createBitmap(bitmap, 0, 0, image.width, image.height) else bitmap
-        val maxWidth = minOf(cropped.width, 1400)
-        val scaledHeight = (cropped.height.toFloat() * maxWidth / cropped.width).roundToInt().coerceAtLeast(1)
-        val full = Bitmap.createScaledBitmap(cropped, maxWidth, scaledHeight, true)
-        if (cropped !== bitmap) cropped.recycle(); bitmap.recycle()
+        plane.buffer.rewind()
+        bitmap.copyPixelsFromBuffer(plane.buffer)
+        return if (bitmap.width != image.width) {
+            val cropped = Bitmap.createBitmap(bitmap, 0, 0, image.width, image.height)
+            bitmap.recycle()
+            cropped
+        } else bitmap
+    }
 
+    private fun bitmapToFrameSet(source: Bitmap): List<EncodedImage> {
+        val maxWidth = minOf(source.width, 1400)
+        val scaledHeight = (source.height.toFloat() * maxWidth / source.width).roundToInt().coerceAtLeast(1)
+        val full = if (source.width != maxWidth) Bitmap.createScaledBitmap(source, maxWidth, scaledHeight, true) else source
         val output = mutableListOf<EncodedImage>()
         output += EncodedImage(jpeg(full, 76), "full", full.width, full.height)
         if (full.height > full.width * 12 / 10) {
-            val overlap = (full.height * 0.10f).roundToInt()
             val regionHeight = (full.height * 0.46f).roundToInt().coerceAtLeast(1)
             val starts = listOf(0, ((full.height - regionHeight) / 2), (full.height - regionHeight).coerceAtLeast(0)).distinct()
             listOf("top", "middle", "bottom").zip(starts).forEach { (role, start) ->
@@ -132,7 +148,7 @@ class MonitorService : Service() {
                 crop.recycle()
             }
         }
-        full.recycle()
+        if (full !== source) full.recycle()
         return output
     }
 
@@ -142,7 +158,7 @@ class MonitorService : Service() {
         val connection = URL("$serverUrl/api/analyze-frame").openConnection() as HttpURLConnection
         try {
             connection.requestMethod = "POST"; connection.connectTimeout = 8000; connection.readTimeout = 20000; connection.doOutput = true
-            connection.setRequestProperty("Content-Type", "application/json"); connection.setRequestProperty("Accept", "application/json"); connection.setRequestProperty("User-Agent", "GameVision-Companion/2.0")
+            connection.setRequestProperty("Content-Type", "application/json"); connection.setRequestProperty("Accept", "application/json"); connection.setRequestProperty("User-Agent", "GameVision-Companion/3.0")
             val jsonImages = images.joinToString(",") { item ->
                 val data = android.util.Base64.encodeToString(item.data, android.util.Base64.NO_WRAP)
                 "{\"data\":\"$data\",\"mimeType\":\"image/jpeg\",\"role\":\"${item.role}\",\"width\":${item.width},\"height\":${item.height},\"x\":${item.x},\"y\":${item.y}}"
@@ -172,7 +188,7 @@ class MonitorService : Service() {
     }
     private fun updateHud(title: String, detail: String) { mainHandler.post { overlay?.let { panel -> (panel.getChildAt(1) as? TextView)?.apply { text = "$title\n$detail"; setTextColor(if (title == "OFFLINE") 0xFFFF5D67.toInt() else 0xFFF4F7FA.toInt()) } } } }
     private fun toggleHud() { mainHandler.post { if (overlay == null) showHud() else { runCatching { wm?.removeView(overlay) }; overlay = null } } }
-    private fun stopProjection() { running.set(false); runCatching { virtualDisplay?.release() }; virtualDisplay = null; runCatching { reader?.close() }; reader = null; runCatching { projection?.unregisterCallback(projectionCallback) }; projection = null; stopForeground(STOP_FOREGROUND_REMOVE); stopSelf() }
+    private fun stopProjection() { running.set(false); uploadBusy.set(false); runCatching { virtualDisplay?.release() }; virtualDisplay = null; runCatching { reader?.close() }; reader = null; runCatching { projection?.unregisterCallback(projectionCallback) }; projection = null; stopForeground(STOP_FOREGROUND_REMOVE); stopSelf() }
     override fun onDestroy() { stopProjection(); executor.shutdownNow(); super.onDestroy() }
     override fun onBind(intent: Intent?): IBinder? = null
     private fun createChannel() { if (Build.VERSION.SDK_INT >= 26) getSystemService(NotificationManager::class.java)?.createNotificationChannel(NotificationChannel(CHANNEL, "GameVision Monitor", NotificationManager.IMPORTANCE_LOW)) }
