@@ -49,7 +49,7 @@ export const assistantSchema = {
   required: ["answer", "confidence"], additionalProperties: false
 };
 
-const ACTION_TYPES = ["TAP", "DOUBLE_TAP", "LONG_PRESS", "SWIPE", "DRAG", "PINCH_IN", "PINCH_OUT", "TWO_FINGER_SWIPE", "TYPE_TEXT", "WAIT", "BACK", "HOME", "RECENTS", "NOTIFICATIONS", "QUICK_SETTINGS", "STOP"];
+const ACTION_TYPES = ["TAP", "DOUBLE_TAP", "LONG_PRESS", "SWIPE", "DRAG", "PINCH_IN", "PINCH_OUT", "TWO_FINGER_SWIPE", "TYPE_TEXT", "WAIT", "BACK", "HOME", "RECENTS", "NOTIFICATIONS", "QUICK_SETTINGS", "OPEN_APP", "STOP"];
 
 export const actionSchema = {
   type: "object",
@@ -108,13 +108,7 @@ async function requestOpenRouter(prompt, images, maxTokens, model) {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${OPENROUTER_API_KEY}`, "HTTP-Referer": "https://gamevision.app", "X-Title": "GameVision" },
     signal: AbortSignal.timeout(15000),
-    body: JSON.stringify({
-      model,
-      messages: [{ role: "user", content }],
-      response_format: { type: "json_object" },
-      temperature: 0.1,
-      max_tokens: maxTokens
-    })
+    body: JSON.stringify({ model, messages: [{ role: "user", content }], response_format: { type: "json_object" }, temperature: 0.1, max_tokens: maxTokens })
   });
   if (response.ok) {
     const data = await response.json();
@@ -128,36 +122,20 @@ async function requestOpenRouter(prompt, images, maxTokens, model) {
 
 async function postOpenRouter(prompt, images, maxTokens = 650) {
   if (!providerStatus.openrouterConfigured) throw providerError("AI_NOT_CONFIGURED", 503, "OpenRouter is not configured on the server.", false);
-
-  // Use the official free router as the primary route. It dynamically selects a currently
-  // available free model with the capabilities required by the request, including vision
-  // and structured output, instead of sending a multi-model request that can be rejected
-  // by the upstream API when one model/parameter combination changes.
   const attempts = [OPENROUTER_MODEL, ...nextFreeModels().filter((model) => model !== OPENROUTER_MODEL)];
   let lastError = null;
-
   for (const model of attempts) {
-    try {
-      return await requestOpenRouter(prompt, images, maxTokens, model);
-    } catch (error) {
+    try { return await requestOpenRouter(prompt, images, maxTokens, model); }
+    catch (error) {
       lastError = error;
       if (!error?.retryable && error?.code !== "OPENROUTER_BAD_REQUEST") break;
       if (error?.code === "OPENROUTER_BAD_REQUEST") continue;
       await new Promise((resolve) => setTimeout(resolve, 350));
     }
   }
-
   throw lastError || providerError("FREE_AI_UPSTREAM_ERROR", 502, "OpenRouter free request failed.", true);
 }
 
-export async function analyzeWithOpenRouter(images) {
-  return postOpenRouter(analysisPrompt, images, 650);
-}
-
-export async function askWithOpenRouter(images, instruction, history = [], visionFresh = true) {
-  return postOpenRouter(`${buildAssistantPrompt(instruction, history, Array.isArray(images) && images.length > 0, visionFresh)}\n\nReturn ONLY valid JSON with keys answer and confidence.`, images, 650);
-}
-
-export async function decideWithOpenRouter(images, goal, history = []) {
-  return postOpenRouter(`${buildAutomationPrompt(goal, history)}\n\nReturn ONLY valid JSON with keys type, x, y, x2, y2, text, durationMs, waitMs, reason, confidence, verify, and stopReason.`, images, 500);
-}
+export async function analyzeWithOpenRouter(images) { return postOpenRouter(analysisPrompt, images, 650); }
+export async function askWithOpenRouter(images, instruction, history = [], visionFresh = true) { return postOpenRouter(`${buildAssistantPrompt(instruction, history, Array.isArray(images) && images.length > 0, visionFresh)}\n\nReturn ONLY valid JSON with keys answer and confidence.`, images, 650); }
+export async function decideWithOpenRouter(images, goal, history = []) { return postOpenRouter(`${buildAutomationPrompt(goal, history)}\n\nReturn ONLY valid JSON with keys type, x, y, x2, y2, text, durationMs, waitMs, reason, confidence, verify, and stopReason.`, images, 500); }
