@@ -30,9 +30,9 @@ function normalizeImages(body) {
 
 function rememberProviderError(provider, error) {
   const message = String(error?.message || "");
-  if (/429|rate.?limit|quota/i.test(message)) {
+  if (/429|rate.?limit|quota|402|insufficient.?credits|credit.?balance/i.test(message)) {
     cooldownUntil[provider] = Date.now() + PROVIDER_COOLDOWN_MS;
-    console.warn(`${provider} temporarily disabled after quota/rate-limit response; fallback providers remain active.`);
+    console.warn(`${provider} temporarily disabled after quota/credit/rate-limit response; fallback providers remain active.`);
   }
 }
 
