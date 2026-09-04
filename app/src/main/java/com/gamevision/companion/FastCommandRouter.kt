@@ -17,6 +17,16 @@ object FastCommandRouter {
             lower.matches(Regex("^(open )?(recent apps|recents|recent)$")) -> action("RECENTS")
             lower.matches(Regex("^(open )?notifications?$")) -> action("NOTIFICATIONS")
             lower.matches(Regex("^(open )?quick settings$")) -> action("QUICK_SETTINGS")
+            lower.matches(Regex("^(scroll|swipe)\\s+(up|down|left|right)$")) -> {
+                val direction = lower.substringAfterLast(' ')
+                val (x, y, x2, y2) = when (direction) {
+                    "up" -> intArrayOf(500, 750, 500, 250)
+                    "down" -> intArrayOf(500, 250, 500, 750)
+                    "left" -> intArrayOf(750, 500, 250, 500)
+                    else -> intArrayOf(250, 500, 750, 500)
+                }
+                AutomationAction("SWIPE", x, y, x2, y2, "", 450L, 650L, "Deterministic local scroll", 100, true, "")
+            }
             lower == "stop" || lower == "cancel" -> action("STOP")
             value.matches(Regex("^(tap|click|press|touch)\\s+.+$", RegexOption.IGNORE_CASE)) -> action("TAP_TARGET", value.replaceFirst(Regex("^(tap|click|press|touch)\\s+", RegexOption.IGNORE_CASE), ""))
             value.matches(Regex("^double tap\\s+.+$", RegexOption.IGNORE_CASE)) -> action("DOUBLE_TAP_TARGET", value.replaceFirst(Regex("^double tap\\s+", RegexOption.IGNORE_CASE), ""))
