@@ -5,6 +5,7 @@ const OPENROUTER_MODEL = "openrouter/free";
 // Keep fallbacks current, free, multimodal, and compatible with JSON response_format.
 const FREE_MODELS = [
   "openrouter/free",
+  "google/gemma-4-31b-it:free",
   "google/gemma-4-26b-a4b-it:free",
   "minimax/minimax-m3:free"
 ];
