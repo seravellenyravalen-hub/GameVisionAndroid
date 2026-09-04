@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { buildAssistantPrompt, buildAutomationPrompt, isScreenDependentInstruction, normalizeAction, normalizeAssistantReply } from "./assistant.js";
 
-test("assistant prompt is generic and includes recent conversation", () => {
+test("assistant prompt is generic, visually grounded, and fast", () => {
   const prompt = buildAssistantPrompt("What should I tap?", [
     { role: "user", content: "Open the game" },
     { role: "assistant", content: "The game screen is visible." }
@@ -10,6 +10,9 @@ test("assistant prompt is generic and includes recent conversation", () => {
   assert.match(prompt, /active general-purpose AI companion/i);
   assert.match(prompt, /OPEN THE GAME/i);
   assert.match(prompt, /football/i);
+  assert.match(prompt, /FAST|CONCISE|DIRECT/i);
+  assert.match(prompt, /current screen/i);
+  assert.match(prompt, /remember|continuity/i);
 });
 
 test("automation prompt is game agnostic and one-step", () => {
@@ -24,6 +27,7 @@ test("automation prompt is game agnostic and one-step", () => {
   assert.match(prompt, /TWO_FINGER_SWIPE/);
   assert.match(prompt, /TYPE_TEXT/);
   assert.match(prompt, /GLOBAL ACTIONS/i);
+  assert.match(prompt, /re-check the current screen/i);
 });
 
 test("normalizes assistant reply without inventing missing text", () => {
