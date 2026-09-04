@@ -1,0 +1,100 @@
+name: Repair Command Engine
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    if: contains(github.event.head_commit.message, 'arm command engine repair')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Patch command routing and tap execution
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          # 1) Natural-language messages: route likely commands to AUTO; keep clear questions as chat.
+          p = Path('app/src/main/java/com/gamevision/companion/AssistantOverlayService.kt')
+          s = p.read_text()
+          old = '''    private fun sendCurrent() { val text = input?.text?.toString().orEmpty().trim(); if (text.isBlank()) return; input?.setText(""); addMessage("user", text); if (looksLikeActionCommand(text)) startAutoGoal(text) else ask(text) }\n    private fun looksLikeActionCommand(text: String): Boolean { val value = text.trim().lowercase(Locale.US); if (value.matches(Regex("^(tap|click|press|hold|swipe|scroll|drag|drop|type|enter|open|close|select|choose|start|stop|play|find|search|send|reply|go back|go home|navigate|turn on|turn off|enable|disable|launch|move|touch|double tap|long press|use|check|look at|do|make|keep|continue)\\\\b.*"))) return true; return value.contains(" for me") && !value.startsWith("what") && !value.startsWith("why") && !value.startsWith("how") }'''
+          if old not in s:
+              # Match the actual Kotlin text robustly.
+              pattern = re.compile(r'    private fun sendCurrent\(\).*?\n    private fun ask\(', re.S)
+              m = pattern.search(s)
+              if not m: raise SystemExit('AssistantOverlayService routing block not found')
+              new = '''    private fun sendCurrent() {\n        val text = input?.text?.toString().orEmpty().trim()\n        if (text.isBlank()) return\n        input?.setText("")\n        addMessage("user", text)\n        if (looksLikeActionCommand(text)) startAutoGoal(text) else ask(text)\n    }\n\n    private fun looksLikeActionCommand(text: String): Boolean {\n        val value = text.trim().lowercase(Locale.US)\n        if (value.isBlank()) return false\n        val question = value.matches(Regex("^(what|why|how|when|where|who|which|can you explain|tell me|is it|are you|do you know)\\\\b.*")) || value.endsWith("?")\n        if (question && !value.matches(Regex("^(can you|could you|please|would you|will you|are you able to)\\\\b.*\\\\b(open|launch|tap|click|press|hold|swipe|scroll|type|enter|select|choose|close|go|start|stop|play|send|reply|find|search|turn on|turn off|enable|disable|move|do|perform|execute|make)\\\\b.*"))) return false\n        val commandLead = Regex("^(please\\\\s+|can you\\\\s+|could you\\\\s+|would you\\\\s+|will you\\\\s+|i want you to\\\\s+|i need you to\\\\s+|help me\\\\s+|go ahead and\\\\s+)?(tap|click|press|touch|hold|long press|double tap|swipe|scroll|drag|drop|type|enter|write|open|launch|start|run|close|select|choose|find|search|send|reply|go back|go home|navigate|turn on|turn off|enable|disable|move|play|stop|do|perform|execute|make|use|check|look at|continue)\\\\b.*")\n        return commandLead.matches(value) || value.contains(" for me") || value.startsWith("i want you to ") || value.startsWith("i need you to ") || value.startsWith("help me ")\n    }\n\n    private fun ask('''
+              s = s[:m.start()] + new + s[m.end()-len('    private fun ask('):]
+          else:
+              new = '''    private fun sendCurrent() {\n        val text = input?.text?.toString().orEmpty().trim()\n        if (text.isBlank()) return\n        input?.setText("")\n        addMessage("user", text)\n        if (looksLikeActionCommand(text)) startAutoGoal(text) else ask(text)\n    }\n    private fun looksLikeActionCommand(text: String): Boolean {\n        val value = text.trim().lowercase(Locale.US)\n        if (value.isBlank()) return false\n        val question = value.matches(Regex("^(what|why|how|when|where|who|which|can you explain|tell me|is it|are you|do you know)\\\\b.*")) || value.endsWith("?")\n        if (question && !value.matches(Regex("^(can you|could you|please|would you|will you|are you able to)\\\\b.*\\\\b(open|launch|tap|click|press|hold|swipe|scroll|type|enter|select|choose|close|go|start|stop|play|send|reply|find|search|turn on|turn off|enable|disable|move|do|perform|execute|make)\\\\b.*"))) return false\n        val commandLead = Regex("^(please\\\\s+|can you\\\\s+|could you\\\\s+|would you\\\\s+|will you\\\\s+|i want you to\\\\s+|i need you to\\\\s+|help me\\\\s+|go ahead and\\\\s+)?(tap|click|press|touch|hold|long press|double tap|swipe|scroll|drag|drop|type|enter|write|open|launch|start|run|close|select|choose|find|search|send|reply|go back|go home|navigate|turn on|turn off|enable|disable|move|play|stop|do|perform|execute|make|use|check|look at|continue)\\\\b.*")\n        return commandLead.matches(value) || value.contains(" for me") || value.startsWith("i want you to ") || value.startsWith("i need you to ") || value.startsWith("help me ")\n    }'''
+              s = s.replace(old, new, 1)
+          p.write_text(s)
+
+          # 2) Target taps must use AI vision, not the accessibility-node fast path.
+          p = Path('app/src/main/java/com/gamevision/companion/FastCommandRouter.kt')
+          s = p.read_text()
+          for line in [
+              '            value.matches(Regex("^(tap|click|press|touch)\\\\s+.+$", RegexOption.IGNORE_CASE)) -> action("TAP_TARGET", value.replaceFirst(Regex("^(tap|click|press|touch)\\\\s+", RegexOption.IGNORE_CASE), ""))',
+              '            value.matches(Regex("^double tap\\\\s+.+$", RegexOption.IGNORE_CASE)) -> action("DOUBLE_TAP_TARGET", value.replaceFirst(Regex("^double tap\\\\s+", RegexOption.IGNORE_CASE), ""))',
+              '            value.matches(Regex("^(long press|hold)\\\\s+.+$", RegexOption.IGNORE_CASE)) -> action("LONG_PRESS_TARGET", value.replaceFirst(Regex("^(long press|hold)\\\\s+", RegexOption.IGNORE_CASE), ""), 650L)',
+          ]:
+              s = s.replace(line + '\\n', '', 1)
+          p.write_text(s)
+
+          # 3) Make AI tap/gesture execution snappier: don't inject an 800ms default wait for actions that can be immediate.
+          p = Path('backend/src/assistant.js')
+          s = p.read_text()
+          old = 'const waitMs = Math.min(10000, Math.max(0, Number(raw?.waitMs) || 800));'
+          if old not in s: raise SystemExit('assistant waitMs anchor not found')
+          new = '''const rawType = String(raw?.type || "").toUpperCase();\n  const defaultWait = ["TAP", "DOUBLE_TAP", "LONG_PRESS"].includes(rawType) ? 80 : ["OPEN_APP", "BACK", "HOME", "RECENTS", "NOTIFICATIONS", "QUICK_SETTINGS"].includes(rawType) ? 180 : 350;\n  const waitMs = Math.min(10000, Math.max(0, Number(raw?.waitMs) || defaultWait));'''
+          p.write_text(s.replace(old, new, 1))
+          PY
+          git diff --check
+
+      - name: Test backend
+        working-directory: backend
+        run: npm test
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle 8.13
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: '8.13'
+
+      - name: Android unit tests
+        run: gradle --no-daemon testDebugUnitTest
+
+      - name: Build debug APK
+        run: gradle --no-daemon assembleDebug
+
+      - name: Rename APK
+        run: cp app/build/outputs/apk/debug/app-debug.apk app/build/outputs/apk/debug/GameVision.apk
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: GameVision-Command-Engine
+          path: app/build/outputs/apk/debug/GameVision.apk
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Commit repair
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/src/main/java/com/gamevision/companion/AssistantOverlayService.kt app/src/main/java/com/gamevision/companion/FastCommandRouter.kt backend/src/assistant.js
+          git commit -m "fix: route natural language commands to reliable vision control"
+          git push
