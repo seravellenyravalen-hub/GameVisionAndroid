@@ -54,7 +54,7 @@ class MonitorService : Service() {
     private var projection: MediaProjection? = null
     private var virtualDisplay: VirtualDisplay? = null
     private var reader: ImageReader? = null
-    private var serverUrl = "https://gamevision-api-v2-production.up.railway.app"
+    private var serverUrl = "https://gamevision-api.onrender.com"
     private var lastUploadAt = 0L
     private var overlay: LinearLayout? = null
     private var wm: WindowManager? = null
@@ -73,7 +73,7 @@ class MonitorService : Service() {
 
     private fun startProjection(intent: Intent) {
         if (running.get()) return
-        serverUrl = intent.getStringExtra(EXTRA_SERVER_URL)?.trim()?.removeSuffix("/") ?: serverUrl
+        serverUrl = intent.getStringExtra(EXTRA_SERVER_URL)?.trim()?.removeSuffix("/")?.takeIf { it.isNotBlank() } ?: serverUrl
         val resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, Activity.RESULT_CANCELED)
         val data = intent.getParcelableExtraCompat<Intent>(EXTRA_RESULT_DATA) ?: return
         if (Build.VERSION.SDK_INT >= 29) startForeground(NOTIFICATION_ID, notification("Monitoring the visible screen"), ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
