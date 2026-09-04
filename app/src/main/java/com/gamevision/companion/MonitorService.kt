@@ -43,6 +43,8 @@ class MonitorService : Service() {
         const val EXTRA_SERVER_URL = "server_url"
         private const val CHANNEL = "gamevision_monitor"
         private const val NOTIFICATION_ID = 77
+        @Volatile private var active = false
+        fun isRunning(): Boolean = active
     }
 
     private val executor = Executors.newSingleThreadExecutor()
@@ -87,6 +89,7 @@ class MonitorService : Service() {
         reader?.setOnImageAvailableListener({ onFrame(it) }, mainHandler)
         virtualDisplay = projection?.createVirtualDisplay("GameVisionMonitor", width, height, metrics.densityDpi, DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, reader?.surface, null, null)
         running.set(true)
+        active = true
         if (Settings.canDrawOverlays(this)) showHud()
     }
 
@@ -95,13 +98,7 @@ class MonitorService : Service() {
         if (!uploadBusy.compareAndSet(false, true)) return
         val image = runCatching { imageReader.acquireLatestImage() }.getOrNull()
         if (image == null) { uploadBusy.set(false); return }
-        val snapshot = try {
-            imageToBitmap(image)
-        } catch (e: Exception) {
-            null
-        } finally {
-            runCatching { image.close() }
-        }
+        val snapshot = try { imageToBitmap(image) } catch (_: Exception) { null } finally { runCatching { image.close() } }
         if (snapshot == null) { uploadBusy.set(false); return }
         lastUploadAt = System.currentTimeMillis()
         executor.execute {
@@ -121,8 +118,7 @@ class MonitorService : Service() {
         bitmap.copyPixelsFromBuffer(plane.buffer)
         return if (bitmap.width != image.width) {
             val cropped = Bitmap.createBitmap(bitmap, 0, 0, image.width, image.height)
-            bitmap.recycle()
-            cropped
+            bitmap.recycle(); cropped
         } else bitmap
     }
 
@@ -158,7 +154,7 @@ class MonitorService : Service() {
         val connection = URL("$serverUrl/api/analyze-frame").openConnection() as HttpURLConnection
         try {
             connection.requestMethod = "POST"; connection.connectTimeout = 8000; connection.readTimeout = 20000; connection.doOutput = true
-            connection.setRequestProperty("Content-Type", "application/json"); connection.setRequestProperty("Accept", "application/json"); connection.setRequestProperty("User-Agent", "GameVision-Companion/3.0")
+            connection.setRequestProperty("Content-Type", "application/json"); connection.setRequestProperty("Accept", "application/json"); connection.setRequestProperty("User-Agent", "GameVision-Companion/3.1")
             val jsonImages = images.joinToString(",") { item ->
                 val data = android.util.Base64.encodeToString(item.data, android.util.Base64.NO_WRAP)
                 "{\"data\":\"$data\",\"mimeType\":\"image/jpeg\",\"role\":\"${item.role}\",\"width\":${item.width},\"height\":${item.height},\"x\":${item.x},\"y\":${item.y}}"
@@ -186,9 +182,10 @@ class MonitorService : Service() {
         val params = WindowManager.LayoutParams(dp(300), WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY, WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE, PixelFormat.TRANSLUCENT).apply { gravity = Gravity.TOP or Gravity.END; x = dp(12); y = dp(86) }
         runCatching { wm?.addView(root, params); overlay = root }
     }
+
     private fun updateHud(title: String, detail: String) { mainHandler.post { overlay?.let { panel -> (panel.getChildAt(1) as? TextView)?.apply { text = "$title\n$detail"; setTextColor(if (title == "OFFLINE") 0xFFFF5D67.toInt() else 0xFFF4F7FA.toInt()) } } } }
     private fun toggleHud() { mainHandler.post { if (overlay == null) showHud() else { runCatching { wm?.removeView(overlay) }; overlay = null } } }
-    private fun stopProjection() { running.set(false); uploadBusy.set(false); runCatching { virtualDisplay?.release() }; virtualDisplay = null; runCatching { reader?.close() }; reader = null; runCatching { projection?.unregisterCallback(projectionCallback) }; projection = null; stopForeground(STOP_FOREGROUND_REMOVE); stopSelf() }
+    private fun stopProjection() { running.set(false); active = false; uploadBusy.set(false); runCatching { virtualDisplay?.release() }; virtualDisplay = null; runCatching { reader?.close() }; reader = null; runCatching { projection?.unregisterCallback(projectionCallback) }; projection = null; stopForeground(STOP_FOREGROUND_REMOVE); stopSelf() }
     override fun onDestroy() { stopProjection(); executor.shutdownNow(); super.onDestroy() }
     override fun onBind(intent: Intent?): IBinder? = null
     private fun createChannel() { if (Build.VERSION.SDK_INT >= 26) getSystemService(NotificationManager::class.java)?.createNotificationChannel(NotificationChannel(CHANNEL, "GameVision Monitor", NotificationManager.IMPORTANCE_LOW)) }
