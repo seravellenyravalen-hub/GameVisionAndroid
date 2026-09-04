@@ -44,7 +44,7 @@ function frameStatus(userId = null) { return frameStore.status(userId); }
 function providerFailure(res, error, fallbackCode = "FREE_AI_UPSTREAM_ERROR", extra = {}) {
   const code = String(error?.code || fallbackCode);
   const status = Number(error?.status) || 502;
-  const retryable = Boolean(error?.retryable ?? status >= 500 || status === 429);
+  const retryable = Boolean(error?.retryable ?? (status >= 500 || status === 429));
   const safeError = String(error?.message || "Free AI provider request failed").replace(/[\r\n]+/g, " ").slice(0, 240);
   return res.status(status >= 400 && status < 600 ? status : 502).json({ error: safeError, code, retryable, freeOnly: true, ...extra });
 }
