@@ -43,6 +43,16 @@ class AutomationController {
         goal = requestedGoal.trim()
         history = previousMessages.takeLast(10).toMutableList()
         steps = 0; failures = 0; lowConfidenceRetries = 0; lastFrameSequence = 0L; lastServerEpoch = null; statusListener = listener; active.set(true)
+
+        val fastAction = FastCommandRouter.parse(goal)
+        if (fastAction != null) {
+            listener("FAST • ${fastAction.type} • executing locally…")
+            if (fastAction.type == "STOP") { stop("Stopped by command"); return true }
+            steps = 1
+            executeAndVerify(fastAction)
+            return true
+        }
+
         listener("AUTO ON • getting a fresh screen…")
         waitForFreshFrame(0L, null, MAX_FRAME_WAIT_MS) { ready, sequence, epoch, error ->
             if (!active.get()) return@waitForFreshFrame
@@ -73,16 +83,11 @@ class AutomationController {
             connection.requestMethod = "POST"; connection.connectTimeout = 7000; connection.readTimeout = 22000; connection.doOutput = true
             connection.setRequestProperty("Content-Type", "application/json"); connection.setRequestProperty("Accept", "application/json")
             if (authToken.isNotBlank()) connection.setRequestProperty("Authorization", "Bearer $authToken")
-            val payload = JSONObject()
-                .put("goal", goal)
-                .put("minFrameSequence", lastFrameSequence)
-                .put("minFrameEpoch", lastServerEpoch)
-                .put("messages", JSONArray(history.map { it.toString() }))
+            val payload = JSONObject().put("goal", goal).put("minFrameSequence", lastFrameSequence).put("minFrameEpoch", lastServerEpoch).put("messages", JSONArray(history.map { it.toString() }))
             connection.outputStream.use { it.write(payload.toString().toByteArray(Charsets.UTF_8)) }
             val code = connection.responseCode
             val body = (if (code in 200..299) connection.inputStream else connection.errorStream)?.bufferedReader()?.use { it.readText() }.orEmpty()
             connection.disconnect()
-
             if (code == 401) { stop("session expired — sign in again"); return }
             if (code == 429 && body.contains("FREE_ALLOWANCE_EXHAUSTED")) { stop("free allowance used — it resets automatically"); return }
             if (code == 409) {
@@ -95,20 +100,16 @@ class AutomationController {
                 return
             }
             if (code !in 200..299) throw IllegalStateException("HTTP $code ${body.take(160)}")
-
             val json = JSONObject(body)
             val actionJson = json.optJSONObject("action") ?: throw IllegalStateException("No action returned")
             val frame = json.optJSONObject("frame")
             val sequence = frame?.optLong("sequence", lastFrameSequence) ?: lastFrameSequence
             val epoch = frame?.optString("serverEpoch", lastServerEpoch.orEmpty())?.ifBlank { lastServerEpoch } ?: lastServerEpoch
-            lastFrameSequence = sequence
-            lastServerEpoch = epoch
+            lastFrameSequence = sequence; lastServerEpoch = epoch
             val action = AutomationAction(
-                type = actionJson.optString("type", "STOP"), x = actionJson.optInt("x", 0), y = actionJson.optInt("y", 0),
-                x2 = actionJson.optInt("x2", 0), y2 = actionJson.optInt("y2", 0), text = actionJson.optString("text", ""),
-                durationMs = actionJson.optLong("durationMs", 600), waitMs = actionJson.optLong("waitMs", 800),
-                reason = actionJson.optString("reason", ""), confidence = actionJson.optInt("confidence", 0),
-                verify = actionJson.optBoolean("verify", true), stopReason = actionJson.optString("stopReason", "")
+                type = actionJson.optString("type", "STOP"), x = actionJson.optInt("x", 0), y = actionJson.optInt("y", 0), x2 = actionJson.optInt("x2", 0), y2 = actionJson.optInt("y2", 0),
+                text = actionJson.optString("text", ""), durationMs = actionJson.optLong("durationMs", 600), waitMs = actionJson.optLong("waitMs", 800), reason = actionJson.optString("reason", ""),
+                confidence = actionJson.optInt("confidence", 0), verify = actionJson.optBoolean("verify", true), stopReason = actionJson.optString("stopReason", "")
             )
             if (!active.get()) return
             if (action.type == "STOP") { stop(action.stopReason.ifBlank { action.reason.ifBlank { "AI requested stop" } }); return }
@@ -118,32 +119,43 @@ class AutomationController {
                 requestDecision(400); return
             }
             lowConfidenceRetries = 0; failures = 0; steps++
-            postStatus("AUTO • ${action.type} • ${action.confidence}% • ${action.reason.take(90)}")
-            GameVisionAccessibilityService.execute(action) { success, result ->
-                handler.post {
-                    if (!active.get()) return@post
-                    if (!success) {
-                        failures++; postStatus("RETRYING • $result")
-                        if (failures >= 3) stop("three consecutive Android action failures") else requestDecision(700)
-                        return@post
-                    }
-                    history += JSONObject().put("role", "assistant").put("content", "ACTION ${action.type}: ${action.reason}")
-                    history += JSONObject().put("role", "user").put("content", "Android result: $result. Re-check the current screen and continue the goal if appropriate.")
-                    postStatus("VERIFYING • waiting for a new screen…")
-                    val delay = action.waitMs.coerceIn(0, 5000)
-                    handler.postDelayed({
-                        if (active.get()) waitForFreshFrame(lastFrameSequence, lastServerEpoch, MAX_FRAME_WAIT_MS) { ready, sequenceAfter, epochAfter, error ->
-                            if (!active.get()) return@waitForFreshFrame
-                            if (ready) { lastFrameSequence = sequenceAfter; lastServerEpoch = epochAfter; failures = 0; requestDecision(100) }
-                            else { failures++; postStatus(error ?: "Fresh screen timeout"); if (failures >= 3) stop("screen capture is not updating") else requestDecision(900) }
-                        }
-                    }, delay)
-                }
-            }
+            executeAndVerify(action)
         } catch (error: Exception) {
             if (!active.get()) return
             failures++; postStatus("RETRYING • ${error.message ?: "network failure"}")
             if (failures >= 3) stop("repeated automation errors") else requestDecision(1200)
+        }
+    }
+
+    private fun executeAndVerify(action: AutomationAction) {
+        if (!active.get()) return
+        postStatus("${if (FastCommandRouter.parse(goal) != null) "FAST" else "AUTO"} • ${action.type} • ${action.confidence}% • ${action.reason.take(90)}")
+        GameVisionAccessibilityService.execute(action) { success, result ->
+            handler.post {
+                if (!active.get()) return@post
+                if (!success) {
+                    failures++; postStatus("RETRYING • $result")
+                    if (failures >= 3) stop("three consecutive Android action failures") else requestDecision(400)
+                    return@post
+                }
+                history += JSONObject().put("role", "assistant").put("content", "ACTION ${action.type}: ${action.reason}")
+                history += JSONObject().put("role", "user").put("content", "Android result: $result. Re-check the current screen and continue the goal if appropriate.")
+                postStatus("VERIFYING • waiting for a new screen…")
+                val delay = action.waitMs.coerceIn(0, 5000)
+                handler.postDelayed({
+                    if (!active.get()) return@postDelayed
+                    waitForFreshFrame(lastFrameSequence, lastServerEpoch, MAX_FRAME_WAIT_MS) { ready, sequenceAfter, epochAfter, error ->
+                        if (!active.get()) return@waitForFreshFrame
+                        if (ready) {
+                            lastFrameSequence = sequenceAfter; lastServerEpoch = epochAfter; failures = 0
+                            if (FastCommandRouter.parse(goal) != null) stop("completed and verified") else requestDecision(100)
+                        } else {
+                            failures++; postStatus(error ?: "Fresh screen timeout")
+                            if (failures >= 3) stop("screen capture is not updating") else requestDecision(900)
+                        }
+                    }
+                }, delay)
+            }
         }
     }
 
@@ -162,11 +174,8 @@ class AutomationController {
                     if (code == 401) { handler.post { callback(false, minSequence, minEpoch, "Session expired — sign in again") }; return@execute }
                     if (code !in 200..299) throw IllegalStateException("HTTP $code")
                     val json = JSONObject(body)
-                    val sequence = json.optLong("sequence", 0L)
-                    val epoch = json.optString("serverEpoch", "").ifBlank { null }
-                    val fresh = json.optBoolean("fresh", false)
-                    val epochChanged = minEpoch != null && epoch != null && epoch != minEpoch
-                    val sequenceFresh = sequence > minSequence
+                    val sequence = json.optLong("sequence", 0L); val epoch = json.optString("serverEpoch", "").ifBlank { null }; val fresh = json.optBoolean("fresh", false)
+                    val epochChanged = minEpoch != null && epoch != null && epoch != minEpoch; val sequenceFresh = sequence > minSequence
                     if (fresh && (sequenceFresh || epochChanged || minEpoch == null)) { handler.post { callback(true, sequence, epoch, null) }; return@execute }
                     if (System.currentTimeMillis() >= deadline) { handler.post { callback(false, sequence, epoch, "Timed out waiting for a fresh screen") }; return@execute }
                     handler.postDelayed({ poll() }, FRAME_POLL_MS)
