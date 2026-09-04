@@ -3,7 +3,7 @@ const FALLBACK_ANSWER = "I could not determine that from the available context."
 const VISUAL_PATTERNS = [
   /\b(screen|display|visible|see|look|shown|picture|image|button|menu|icon|text|page|window|game|level|player|object)\b/i,
   /\b(tap|click|press|hold|swipe|scroll|drag|drop|move|open|close|select|choose|type|enter|go back|go home|recents|notification|quick settings|zoom|pinch)\b/i,
-  /\b(do|perform|execute|control|play|start|stop)\b.*\b(it|this|that|game|app|screen|button|menu)\b/i
+  /\b(do|perform|execute|control|play|start|stop|launch|run)\b.*\b(it|this|that|game|app|screen|button|menu)\b/i
 ];
 
 export function isScreenDependentInstruction(instruction) {
@@ -58,10 +58,13 @@ VISION FIRST: inspect the full current screen plus all supplied detail regions. 
 
 SUPPORTED TOUCH: TAP, DOUBLE_TAP, LONG_PRESS, SWIPE, DRAG, PINCH_IN, PINCH_OUT, TWO_FINGER_SWIPE, TYPE_TEXT, WAIT.
 GLOBAL ACTIONS: BACK, HOME, RECENTS, NOTIFICATIONS, QUICK_SETTINGS.
+SYSTEM/APP ACTIONS: OPEN_APP launches a launchable installed Android app by its user-visible name, regardless of whether its icon is currently visible. Prefer OPEN_APP for requests such as open YouTube, launch WhatsApp, start Chrome, or open Settings when the requested app is installed. Do not simulate an icon tap for an app-launch request.
 
 Coordinates use full-screen 0..1000 x/y. Never invent coordinates. Use only visible targets. For TYPE_TEXT, give exact text and require a visible/focused editable field. Use WAIT for animations/transitions. If the target is not visible, navigate or scroll to find it rather than stopping prematurely.
 
-DECISION RULES: choose the smallest reliable action that advances the user's goal. After every action, expect a new frame and re-evaluate the whole screen. Keep state through the conversation and action history. STOP only when the goal is complete, the Android capability is unavailable, the screen is genuinely blocked/unexpected, or there is insufficient visual evidence to act safely.
+DECISION RULES: choose the smallest reliable action that advances the user's goal. Prefer deterministic system/app actions over visual taps when they are available. After every action, expect a new frame and re-evaluate the whole screen. Keep state through the conversation and action history. STOP only when the goal is complete, the Android capability is unavailable, the screen is genuinely blocked/unexpected, or there is insufficient visual evidence to act safely.
+
+SPEED: For time-critical game interactions, choose a single direct gesture rather than unnecessary planning or WAIT. Do not add delays unless the current UI needs them.
 
 CONFIDENCE: provide your confidence in the selected action. Prefer >=70 when evidence is adequate; if uncertain, re-check the current screen instead of guessing.
 
@@ -81,7 +84,7 @@ export function normalizeAssistantReply(raw) {
 }
 
 export function normalizeAction(raw) {
-  const allowed = new Set(["TAP", "DOUBLE_TAP", "LONG_PRESS", "SWIPE", "DRAG", "PINCH_IN", "PINCH_OUT", "TWO_FINGER_SWIPE", "TYPE_TEXT", "WAIT", "BACK", "HOME", "RECENTS", "NOTIFICATIONS", "QUICK_SETTINGS", "STOP"]);
+  const allowed = new Set(["TAP", "DOUBLE_TAP", "LONG_PRESS", "SWIPE", "DRAG", "PINCH_IN", "PINCH_OUT", "TWO_FINGER_SWIPE", "TYPE_TEXT", "WAIT", "BACK", "HOME", "RECENTS", "NOTIFICATIONS", "QUICK_SETTINGS", "OPEN_APP", "STOP"]);
   const type = allowed.has(String(raw?.type || "").toUpperCase()) ? String(raw.type).toUpperCase() : "STOP";
   const number = (value) => Math.min(1000, Math.max(0, Number(value) || 0));
   const durationMs = Math.min(5000, Math.max(100, Number(raw?.durationMs) || 600));
