@@ -145,9 +145,6 @@ class AutomationController {
             handler.post {
                 if (!active.get()) return@post
                 if (!success) {
-                    // Fast routing is an optimization, never a dead end. If an explicit local
-                    // command cannot be executed (for example a game target has no accessibility
-                    // node), hand the same natural-language goal to the vision planner.
                     if (fastCommand && action.type != "STOP") {
                         fastCommand = false
                         history += JSONObject().put("role", "assistant").put("content", "FAST ACTION ${action.type} could not execute: $result")
@@ -254,5 +251,3 @@ class AutomationController {
     private fun postStatus(message: String) { handler.post { statusListener?.invoke(message) } }
     fun shutdown() { active.set(false); executor.shutdownNow() }
 }
-
-data class AutomationAction(val type: String, val x: Int, val y: Int, val x2: Int, val y2: Int, val text: String, val durationMs: Long, val waitMs: Long, val reason: String, val confidence: Int, val verify: Boolean, val stopReason: String)
