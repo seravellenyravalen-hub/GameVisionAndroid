@@ -30,7 +30,7 @@ android {
 }
 
 // Keep the checked-in app compatible with older source snapshots while ensuring
-every Android HTTP client is rewritten to the current Render backend at build time.
+// every Android HTTP client is rewritten to the current Render backend at build time.
 val configureProductionBackend by tasks.registering {
     doLast {
         val sourceRoot = file("src")
