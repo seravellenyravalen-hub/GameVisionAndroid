@@ -1,9 +1,6 @@
 package com.gamevision.companion
 
-/** Local, deterministic command parsing for latency-sensitive commands.
- *  It never performs an action itself; the controller remains responsible for
- *  explicit-command gating and post-action screen verification.
- */
+/** Local deterministic parser. It only classifies explicit user commands. */
 object FastCommandRouter {
     fun parse(input: String): AutomationAction? {
         val value = input.trim()
@@ -20,7 +17,10 @@ object FastCommandRouter {
             lower.matches(Regex("^(open )?(recent apps|recents|recent)$")) -> action("RECENTS")
             lower.matches(Regex("^(open )?notifications?$")) -> action("NOTIFICATIONS")
             lower.matches(Regex("^(open )?quick settings$")) -> action("QUICK_SETTINGS")
-            lower.matches(Regex("^stop$")) -> action("STOP")
+            lower == "stop" || lower == "cancel" -> action("STOP")
+            value.matches(Regex("^(tap|click|press|touch)\\s+.+$", RegexOption.IGNORE_CASE)) -> action("TAP_TARGET", value.replaceFirst(Regex("^(tap|click|press|touch)\\s+", RegexOption.IGNORE_CASE), ""))
+            value.matches(Regex("^double tap\\s+.+$", RegexOption.IGNORE_CASE)) -> action("DOUBLE_TAP_TARGET", value.replaceFirst(Regex("^double tap\\s+", RegexOption.IGNORE_CASE), ""))
+            value.matches(Regex("^(long press|hold)\\s+.+$", RegexOption.IGNORE_CASE)) -> action("LONG_PRESS_TARGET", value.replaceFirst(Regex("^(long press|hold)\\s+", RegexOption.IGNORE_CASE), ""), 650L)
             value.matches(Regex("^(type|enter|write)\\s+.+$", RegexOption.IGNORE_CASE)) -> action("TYPE_TEXT", value.replaceFirst(Regex("^(type|enter|write)\\s+", RegexOption.IGNORE_CASE), ""), 500L)
             lower.matches(Regex("^wait\\s+\\d+\\s*(ms|milliseconds?)?$")) -> {
                 val ms = Regex("\\d+").find(lower)?.value?.toLongOrNull()?.coerceIn(0L, 5000L) ?: 0L
