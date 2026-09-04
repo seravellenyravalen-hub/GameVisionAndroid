@@ -11,8 +11,17 @@ const FREE_MODELS = [
 ];
 let rotationIndex = 0;
 
+export function isUsableOpenRouterKey(value) {
+  const key = String(value || "").trim();
+  if (!key) return false;
+  if (/\$\{[^}]+\}/.test(key) || /^\$[A-Z0-9_]+$/.test(key)) return false;
+  if (/^(replace|your|put|set|insert)[ _-]*(with|the)?/i.test(key)) return false;
+  if (/OPENROUTER_API_KEY/i.test(key) && key.length < 60) return false;
+  return true;
+}
+
 export const providerStatus = {
-  openrouterConfigured: OPENROUTER_API_KEY.length > 0,
+  openrouterConfigured: isUsableOpenRouterKey(OPENROUTER_API_KEY),
   openrouterModel: OPENROUTER_MODEL,
   openrouterFreeOnly: true
 };
@@ -94,16 +103,16 @@ async function postOpenRouter(prompt, images) {
 }
 
 export async function analyzeWithOpenRouter(images) {
-  if (!OPENROUTER_API_KEY) throw new Error("OpenRouter is not configured");
+  if (!providerStatus.openrouterConfigured) throw new Error("OpenRouter is not configured");
   return postOpenRouter(analysisPrompt, images);
 }
 
 export async function askWithOpenRouter(images, instruction, history = [], visionFresh = true) {
-  if (!OPENROUTER_API_KEY) throw new Error("OpenRouter is not configured");
+  if (!providerStatus.openrouterConfigured) throw new Error("OpenRouter is not configured");
   return postOpenRouter(`${buildAssistantPrompt(instruction, history, Array.isArray(images) && images.length > 0, visionFresh)}\n\nReturn ONLY valid JSON with keys answer and confidence.`, images);
 }
 
 export async function decideWithOpenRouter(images, goal, history = []) {
-  if (!OPENROUTER_API_KEY) throw new Error("OpenRouter is not configured");
+  if (!providerStatus.openrouterConfigured) throw new Error("OpenRouter is not configured");
   return postOpenRouter(`${buildAutomationPrompt(goal, history)}\n\nReturn ONLY valid JSON with keys type, x, y, x2, y2, text, durationMs, waitMs, reason, confidence, verify, and stopReason.`, images);
 }
