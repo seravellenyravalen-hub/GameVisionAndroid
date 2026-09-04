@@ -141,10 +141,30 @@ class AssistantOverlayService : Service(), TextToSpeech.OnInitListener {
                 connection = URL("$serverUrl/api/ask").openConnection() as HttpURLConnection; connection.requestMethod = "POST"; connection.connectTimeout = 9000; connection.readTimeout = 30000; connection.doOutput = true; connection.setRequestProperty("Content-Type", "application/json"); connection.setRequestProperty("Accept", "application/json")
                 val token = AuthStore.token(this).orEmpty(); if (token.isNotBlank()) connection.setRequestProperty("Authorization", "Bearer $token")
                 val array = JSONArray(); history.forEach { array.put(JSONObject().put("role", it.role).put("content", it.content)) }; connection.outputStream.use { it.write(JSONObject().put("instruction", question).put("messages", array).toString().toByteArray(Charsets.UTF_8)) }
-                val code = connection.responseCode; val text = (if (code in 200..299) connection.inputStream else connection.errorStream)?.bufferedReader()?.use { it.readText() }.orEmpty(); val json = if (text.isNotBlank()) JSONObject(text) else JSONObject(); val answer = json.optJSONObject("reply")?.optString("answer").orEmpty().ifBlank { json.optString("error").ifBlank { "Assistant returned no answer." } }; val provider = json.optString("provider", "AI"); val vision = json.optBoolean("visionUsed", false)
-                handler.post { if (code in 200..299) { addMessage("assistant", answer); statusView?.text = "AI • ${provider.uppercase(Locale.US)} • ${if (vision) "VISION ON" else "CHAT"}"; speak(answer); scheduleLiveListen() } else if (code == 401) { addMessage("assistant", "Your GameVision session expired. Sign in again to continue."); statusView?.text = "ACCOUNT • SIGN IN REQUIRED" } else if (code == 409) { addMessage("assistant", "Screen capture is not ready yet. Keep Monitor running and I will use the next frame."); statusView?.text = "CAPTURE • WAITING FOR FRAME" } else if (code == 429) { addMessage("assistant", json.optString("error").ifBlank { "Your free allowance is temporarily unavailable." }); statusView?.text = "AI • FREE ALLOWANCE / RETRY" } else { addMessage("assistant", "Free AI is temporarily unavailable. Please try again shortly."); statusView?.text = "AI • RETRY AVAILABLE" } }
-            } catch (e: Exception) { handler.post { addMessage("assistant", "GameVision cannot reach the AI service. Check your network connection and try again."); statusView?.text = "AI • CONNECTION ERROR" } } finally { connection?.disconnect() }
+                val code = connection.responseCode; val text = (if (code in 200..299) connection.inputStream else connection.errorStream)?.bufferedReader()?.use { it.readText() }.orEmpty(); val json = if (text.isNotBlank()) JSONObject(text) else JSONObject(); val answer = json.optJSONObject("reply")?.optString("answer").orEmpty().ifBlank { json.optString("error").ifBlank { "Assistant returned no answer." } }; val provider = json.optString("provider", "AI"); val vision = json.optBoolean("visionUsed", false); val errorCode = json.optString("code", "")
+                handler.post {
+                    when {
+                        code in 200..299 -> { addMessage("assistant", answer); statusView?.text = "AI • ${provider.uppercase(Locale.US)} • ${if (vision) "VISION ON" else "CHAT"}"; speak(answer); scheduleLiveListen() }
+                        code == 401 -> { addMessage("assistant", "Your GameVision session expired. Sign in again to continue."); statusView?.text = "ACCOUNT • SIGN IN REQUIRED" }
+                        code == 409 -> { addMessage("assistant", "Screen capture is not ready yet. Keep Monitor running and I will use the next frame."); statusView?.text = "CAPTURE • WAITING FOR FRAME" }
+                        code == 429 -> { addMessage("assistant", errorMessage(errorCode, answer)); statusView?.text = if (errorCode == "FREE_ALLOWANCE_EXHAUSTED") "AI • ALLOWANCE USED • AUTO RESET" else "AI • RATE LIMITED • RETRY" }
+                        else -> { addMessage("assistant", errorMessage(errorCode, answer)); statusView?.text = "AI • ${errorCode.ifBlank { "SERVICE ERROR" }} • RETRY" }
+                    }
+                }
+            } catch (e: Exception) { handler.post { addMessage("assistant", "GameVision cannot reach the AI service. Check your network connection and try again."); statusView?.text = "AI • CONNECTION ERROR • RETRY" } } finally { connection?.disconnect() }
         }
+    }
+
+    private fun errorMessage(code: String, fallback: String): String = when (code) {
+        "AI_NOT_CONFIGURED" -> "Free AI is not configured on the GameVision server. The OpenRouter key must be added in Render."
+        "OPENROUTER_AUTH_FAILED" -> "OpenRouter rejected the server key. The server administrator needs to check the Render OPENROUTER_API_KEY."
+        "OPENROUTER_CREDITS_REQUIRED" -> "OpenRouter reported that the selected upstream route needs credits. No GameVision credit was consumed."
+        "OPENROUTER_TIMEOUT" -> "OpenRouter timed out. The command is safe to retry."
+        "FREE_AI_RATE_LIMITED" -> "The free OpenRouter route is temporarily rate-limited. Please retry shortly."
+        "FREE_AI_UPSTREAM_ERROR" -> "The free AI provider returned an upstream error. Please retry shortly."
+        "AI_EMPTY_RESPONSE", "AI_INVALID_RESPONSE" -> "The AI provider returned an unusable response. Please retry."
+        "FREE_ALLOWANCE_EXHAUSTED" -> fallback.ifBlank { "Your free GameVision allowance has been used. It will reset automatically." }
+        else -> fallback.ifBlank { "The AI service returned an error. Please retry." }
     }
 
     private fun scheduleLiveListen() { if (liveVoiceActive) handler.postDelayed({ if (liveVoiceActive) startVoiceAttempt() }, LIVE_RESTART_MS) }
@@ -163,7 +183,7 @@ class AssistantOverlayService : Service(), TextToSpeech.OnInitListener {
     }
 
     private fun startAuto() { val goal = input?.text?.toString().orEmpty().trim(); if (goal.isBlank()) { addMessage("assistant", "Type or say the task first. I will send it to the action planner."); return }; input?.setText(""); addMessage("user", "AUTO: $goal"); startAutoGoal(goal) }
-    private fun startAutoGoal(goal: String) { val snapshot = messages.takeLast(10).map { JSONObject().put("role", it.role).put("content", it.content) }; val token = AuthStore.token(this).orEmpty(); val started = automation?.start(serverUrl, token, goal, snapshot) { status -> handler.post { statusView?.text = status; if (status.startsWith("AUTO OFF")) addMessage("assistant", status.removePrefix("AUTO OFF • ")) } } == true; if (!started && automation?.isActive() != true) addMessage("assistant", "Control is not active. Enable GameVision Accessibility, then try the command again.") }
+    private fun startAutoGoal(goal: String) { val snapshot = messages.takeLast(10).map { JSONObject().put("role", it.role).put("content", it.content) }; val token = AuthStore.token(this).orEmpty(); val started = automation?.start(serverUrl, token, goal, snapshot) { status -> handler.post { statusView?.text = status; if (status.startsWith("SUCCESS") || status.startsWith("FAILED")) addMessage("assistant", status) } } == true; if (!started && automation?.isActive() != true) addMessage("assistant", "Control is not active. Enable GameVision Accessibility, then try the command again.") }
     private fun stopAuto() { automation?.stop("Stopped by user"); statusView?.text = "AUTO • STOPPED BY USER" }
 
     private fun startVoiceAttempt() {
