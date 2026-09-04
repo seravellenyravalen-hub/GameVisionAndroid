@@ -57,7 +57,7 @@ Return exactly ONE next action. Android executes it, captures a newer screen, an
 VISION FIRST: inspect the full current screen plus all supplied detail regions. Reconcile them before choosing coordinates. Use recent context to remember the goal and previous actions, but the newest screen is authoritative for what is currently visible.
 
 SUPPORTED TOUCH: TAP, DOUBLE_TAP, LONG_PRESS, SWIPE, DRAG, PINCH_IN, PINCH_OUT, TWO_FINGER_SWIPE, TYPE_TEXT, WAIT.
-GLOBAL: BACK, HOME, RECENTS, NOTIFICATIONS, QUICK_SETTINGS.
+GLOBAL ACTIONS: BACK, HOME, RECENTS, NOTIFICATIONS, QUICK_SETTINGS.
 
 Coordinates use full-screen 0..1000 x/y. Never invent coordinates. Use only visible targets. For TYPE_TEXT, give exact text and require a visible/focused editable field. Use WAIT for animations/transitions. If the target is not visible, navigate or scroll to find it rather than stopping prematurely.
 
