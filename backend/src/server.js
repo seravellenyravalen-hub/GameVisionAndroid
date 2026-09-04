@@ -1,13 +1,13 @@
 import express from "express";
 import { mergeProviderResults, normalizeProviderResult } from "./analysis.js";
 import { buildAssistantPrompt, isScreenDependentInstruction, normalizeAction, normalizeAssistantReply, normalizeHistory } from "./assistant.js";
-import { analyzeWithGemini, analyzeWithOpenAI, analyzeWithOpenRouter, askWithGemini, askWithOpenAI, askWithOpenRouter, decideWithGemini, decideWithOpenAI, decideWithOpenRouter, providerStatus } from "./aiProviders.js";
+import { analyzeWithOpenRouter, askWithOpenRouter, decideWithOpenRouter, providerStatus } from "./aiProviders.js";
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const PROVIDER_COOLDOWN_MS = 5 * 60 * 1000;
+const PROVIDER_COOLDOWN_MS = 60 * 1000;
 const MAX_FRAME_AGE_MS = 15000;
-const cooldownUntil = { openrouter: 0, openai: 0, gemini: 0 };
+let openrouterCooldownUntil = 0;
 let latestFrame = null;
 let frameSequence = 0;
 
@@ -28,20 +28,17 @@ function normalizeImages(body) {
   }));
 }
 
-function rememberProviderError(provider, error) {
+function rememberOpenRouterError(error) {
   const message = String(error?.message || "");
   if (/429|rate.?limit|quota|402|insufficient.?credits|credit.?balance/i.test(message)) {
-    cooldownUntil[provider] = Date.now() + PROVIDER_COOLDOWN_MS;
-    console.warn(`${provider} temporarily disabled after quota/credit/rate-limit response; fallback providers remain active.`);
+    openrouterCooldownUntil = Date.now() + PROVIDER_COOLDOWN_MS;
+    console.warn("OpenRouter free route temporarily rate-limited; free model rotation remains enabled.");
   }
 }
 
-function providerAvailable(provider) {
-  return Boolean(providerStatus[`${provider}Configured`]) && Date.now() >= cooldownUntil[provider];
-}
-
+function openrouterAvailable() { return providerStatus.openrouterConfigured && Date.now() >= openrouterCooldownUntil; }
 function frameAgeMs() { return latestFrame ? Math.max(0, Date.now() - latestFrame.capturedAt) : null; }
-function frameStatus() { return { sequence: latestFrame?.sequence || 0, capturedAt: latestFrame?.capturedAt || null, ageMs: frameAgeMs(), fresh: Boolean(latestFrame && (Date.now() - latestFrame.capturedAt) <= MAX_FRAME_AGE_MS) }; }
+function frameStatus() { return { sequence: latestFrame?.sequence || 0, capturedAt: latestFrame?.capturedAt || null, ageMs: frameAgeMs(), fresh: Boolean(latestFrame && Date.now() - latestFrame.capturedAt <= MAX_FRAME_AGE_MS) }; }
 
 function requireFreshFrame(res, minSequence = 0) {
   if (!latestFrame) { res.status(409).json({ error: "Waiting for the first screen capture", code: "FRAME_NEEDED", frame: frameStatus() }); return false; }
@@ -50,103 +47,70 @@ function requireFreshFrame(res, minSequence = 0) {
   return true;
 }
 
-function primaryProvider() {
-  if (providerAvailable("openrouter")) return "openrouter";
-  if (providerAvailable("openai")) return "openai";
-  if (providerAvailable("gemini")) return "gemini";
-  return null;
-}
-
 app.get("/health", (req, res) => {
-  const primary = primaryProvider();
+  const configured = Boolean(providerStatus.openrouterConfigured);
+  const available = openrouterAvailable();
   res.status(200).json({
     status: "healthy", service: "gamevision-api",
-    aiConfigured: Boolean(primary),
-    openrouterConfigured: providerStatus.openrouterConfigured,
-    openrouterAvailable: providerAvailable("openrouter"),
+    aiConfigured: configured,
+    aiAvailable: available,
+    freeOnly: true,
+    provider: "openrouter",
+    openrouterConfigured: configured,
+    openrouterAvailable: available,
     openrouterModel: providerStatus.openrouterModel,
-    openaiConfigured: providerStatus.openaiConfigured,
-    openaiAvailable: providerAvailable("openai"),
-    openaiModel: providerStatus.openaiModel,
-    geminiConfigured: providerStatus.geminiConfigured,
-    geminiAvailable: providerAvailable("gemini"),
-    geminiModel: providerStatus.geminiModel,
-    primaryProvider: primary,
-    model: primary ? providerStatus[`${primary}Model`] : null,
+    primaryProvider: available ? "openrouter" : null,
+    model: providerStatus.openrouterModel,
     frame: frameStatus(), timestamp: new Date().toISOString()
   });
 });
 
-app.get("/", (req, res) => res.json({ service: "GameVision API", status: "online", aiConfigured: Boolean(primaryProvider()), openrouterConfigured: providerStatus.openrouterConfigured, openrouterModel: providerStatus.openrouterModel, openaiConfigured: providerStatus.openaiConfigured, geminiConfigured: providerStatus.geminiConfigured, primaryProvider: primaryProvider(), frame: frameStatus() }));
+app.get("/", (req, res) => res.json({ service: "GameVision API", status: "online", aiConfigured: Boolean(providerStatus.openrouterConfigured), aiAvailable: openrouterAvailable(), freeOnly: true, provider: "openrouter", openrouterModel: providerStatus.openrouterModel, frame: frameStatus() }));
 app.get("/api/frame-status", (req, res) => res.json(frameStatus()));
 
 app.post("/api/analyze-frame", async (req, res) => {
   try {
     const images = normalizeImages(req.body);
     if (!images.length) return res.status(400).json({ error: "Image payload required", code: "IMAGE_REQUIRED" });
-    if (!primaryProvider()) return res.status(503).json({ error: "AI analysis is not configured", code: "AI_NOT_CONFIGURED" });
+    if (!providerStatus.openrouterConfigured) return res.status(503).json({ error: "Free AI is not configured", code: "AI_NOT_CONFIGURED", freeOnly: true });
     const sequence = ++frameSequence;
     latestFrame = { images, capturedAt: Date.now(), sequence };
-
-    const primary = primaryProvider();
-    const secondary = primary === "openrouter"
-      ? (providerAvailable("gemini") ? "gemini" : providerAvailable("openai") ? "openai" : null)
-      : primary === "openai"
-        ? (providerAvailable("gemini") ? "gemini" : null)
-        : null;
-
-    const call = (provider) => provider === "openrouter" ? analyzeWithOpenRouter(images) : provider === "openai" ? analyzeWithOpenAI(images) : analyzeWithGemini(images);
-    const attempts = await Promise.allSettled([call(primary), ...(secondary ? [call(secondary)] : [])]);
-    const rawPrimary = attempts[0]?.status === "fulfilled" ? attempts[0].value : null;
-    const rawSecondary = attempts[1]?.status === "fulfilled" ? attempts[1].value : null;
-    if (attempts[0]?.status === "rejected") rememberProviderError(primary, attempts[0].reason);
-    if (attempts[1]?.status === "rejected") rememberProviderError(secondary, attempts[1].reason);
-    if (!rawPrimary && !rawSecondary) return res.status(502).json({ error: "AI analysis service unavailable", code: "AI_UPSTREAM_ERROR", frame: frameStatus() });
-
-    const merged = mergeProviderResults(
-      rawPrimary ? normalizeProviderResult(rawPrimary, primary) : null,
-      rawSecondary ? normalizeProviderResult(rawSecondary, secondary) : null
-    );
-    return res.json({ analysis: merged, providers: { primary, secondary, primaryOk: Boolean(rawPrimary), secondaryOk: Boolean(rawSecondary), agreement: merged.agreement }, activeProvider: merged.provider, frame: frameStatus() });
+    if (!openrouterAvailable()) return res.status(429).json({ error: "Free AI is temporarily rate-limited", code: "FREE_AI_RATE_LIMITED", frame: frameStatus() });
+    try {
+      const raw = await analyzeWithOpenRouter(images);
+      const analysis = mergeProviderResults(normalizeProviderResult(raw, "openrouter"), null);
+      return res.json({ analysis, providers: { primary: "openrouter", secondary: null, primaryOk: true, secondaryOk: false, agreement: null }, activeProvider: "openrouter", frame: frameStatus(), freeOnly: true });
+    } catch (error) {
+      rememberOpenRouterError(error);
+      return res.status(502).json({ error: "Free AI temporarily unavailable", code: "FREE_AI_UPSTREAM_ERROR", frame: frameStatus(), freeOnly: true });
+    }
   } catch (error) {
     console.error("GameVision frame analysis error:", error?.message || error);
-    return res.status(502).json({ error: "Unable to analyze frame", code: "AI_ANALYSIS_FAILED" });
+    return res.status(502).json({ error: "Unable to analyze frame", code: "AI_ANALYSIS_FAILED", freeOnly: true });
   }
 });
-
-async function askProvider(provider, images, instruction, history, visionFresh) {
-  if (provider === "openrouter") return askWithOpenRouter(images, instruction, history, visionFresh);
-  if (provider === "openai") return askWithOpenAI(images, instruction, history, visionFresh);
-  return askWithGemini(images, instruction, history, visionFresh);
-}
 
 app.post("/api/ask", async (req, res) => {
   try {
     const instruction = String(req.body?.instruction || "").trim();
     if (!instruction) return res.status(400).json({ error: "Instruction required", code: "INSTRUCTION_REQUIRED" });
-    if (!primaryProvider()) return res.status(503).json({ error: "AI analysis is not configured", code: "AI_NOT_CONFIGURED" });
+    if (!providerStatus.openrouterConfigured) return res.status(503).json({ error: "Free AI is not configured", code: "AI_NOT_CONFIGURED", freeOnly: true });
     const history = normalizeHistory(req.body?.messages);
     const visualRequest = isScreenDependentInstruction(instruction);
     const hasFrame = Boolean(latestFrame);
     const hasFreshFrame = Boolean(latestFrame && Date.now() - latestFrame.capturedAt <= MAX_FRAME_AGE_MS);
     if (visualRequest && !hasFrame) return res.status(409).json({ error: "Waiting for the first screen capture", code: "FRAME_NEEDED", frame: frameStatus() });
-    const images = hasFrame ? latestFrame.images : [];
-    let raw = null; let provider = null;
-    for (const candidate of ["openrouter", "openai", "gemini"]) {
-      if (!providerAvailable(candidate)) continue;
-      try { raw = await askProvider(candidate, images, instruction, history, hasFreshFrame); provider = candidate; break; }
-      catch (error) { rememberProviderError(candidate, error); console.error(`${candidate} assistant unavailable:`, error?.message || error); }
+    if (!openrouterAvailable()) return res.status(429).json({ error: "Free AI is temporarily rate-limited; retry after cooldown", code: "FREE_AI_RATE_LIMITED", frame: frameStatus(), freeOnly: true });
+    try {
+      const images = hasFrame ? latestFrame.images : [];
+      const raw = await askWithOpenRouter(images, instruction, history, hasFreshFrame);
+      return res.json({ reply: normalizeAssistantReply(raw), provider: "openrouter", visionUsed: images.length > 0, visionFresh: hasFreshFrame, frame: frameStatus(), freeOnly: true, instruction: buildAssistantPrompt(instruction, history, images.length > 0, hasFreshFrame).split("CURRENT USER MESSAGE:\n")[1] || instruction });
+    } catch (error) {
+      rememberOpenRouterError(error);
+      return res.status(502).json({ error: "Free AI temporarily unavailable", code: "FREE_AI_UPSTREAM_ERROR", freeOnly: true });
     }
-    if (!raw) return res.status(502).json({ error: "Assistant AI unavailable", code: "AI_UPSTREAM_ERROR" });
-    return res.json({ reply: normalizeAssistantReply(raw), provider, visionUsed: images.length > 0, visionFresh: hasFreshFrame, frame: frameStatus(), instruction: buildAssistantPrompt(instruction, history, images.length > 0, hasFreshFrame).split("CURRENT USER MESSAGE:\n")[1] || instruction });
-  } catch (error) { console.error("GameVision assistant error:", error?.message || error); return res.status(502).json({ error: "Unable to answer instruction", code: "ASSISTANT_FAILED" }); }
+  } catch (error) { console.error("GameVision assistant error:", error?.message || error); return res.status(502).json({ error: "Unable to answer instruction", code: "ASSISTANT_FAILED", freeOnly: true }); }
 });
-
-async function decideProvider(provider, images, goal, history) {
-  if (provider === "openrouter") return decideWithOpenRouter(images, goal, history);
-  if (provider === "openai") return decideWithOpenAI(images, goal, history);
-  return decideWithGemini(images, goal, history);
-}
 
 app.post("/api/automation/decide", async (req, res) => {
   try {
@@ -154,18 +118,18 @@ app.post("/api/automation/decide", async (req, res) => {
     if (!goal) return res.status(400).json({ error: "Automation goal required", code: "GOAL_REQUIRED" });
     const minSequence = Number(req.body?.minFrameSequence) || 0;
     if (!requireFreshFrame(res, minSequence)) return;
-    if (!primaryProvider()) return res.status(503).json({ error: "AI analysis is not configured", code: "AI_NOT_CONFIGURED" });
+    if (!providerStatus.openrouterConfigured) return res.status(503).json({ error: "Free AI is not configured", code: "AI_NOT_CONFIGURED", freeOnly: true });
+    if (!openrouterAvailable()) return res.status(429).json({ error: "Free AI is temporarily rate-limited; retry after cooldown", code: "FREE_AI_RATE_LIMITED", frame: frameStatus(), freeOnly: true });
     const history = normalizeHistory(req.body?.messages);
-    let raw = null; let provider = null;
-    for (const candidate of ["openrouter", "openai", "gemini"]) {
-      if (!providerAvailable(candidate)) continue;
-      try { raw = await decideProvider(candidate, latestFrame.images, goal, history); provider = candidate; break; }
-      catch (error) { rememberProviderError(candidate, error); console.error(`${candidate} action planner unavailable:`, error?.message || error); }
+    try {
+      const raw = await decideWithOpenRouter(latestFrame.images, goal, history);
+      return res.json({ action: normalizeAction(raw), provider: "openrouter", frame: frameStatus(), freeOnly: true });
+    } catch (error) {
+      rememberOpenRouterError(error);
+      return res.status(502).json({ error: "Free action planner temporarily unavailable", code: "FREE_AI_UPSTREAM_ERROR", freeOnly: true });
     }
-    if (!raw) return res.status(502).json({ error: "Action planner unavailable", code: "ACTION_AI_UNAVAILABLE" });
-    return res.json({ action: normalizeAction(raw), provider, frame: frameStatus() });
-  } catch (error) { console.error("GameVision automation error:", error?.message || error); return res.status(502).json({ error: "Unable to plan action", code: "AUTOMATION_FAILED" }); }
+  } catch (error) { console.error("GameVision automation error:", error?.message || error); return res.status(502).json({ error: "Unable to plan action", code: "AUTOMATION_FAILED", freeOnly: true }); }
 });
 
 app.use((err, req, res, next) => { console.error("GameVision API error:", err); res.status(500).json({ error: "Internal server error" }); });
-app.listen(PORT, "0.0.0.0", () => console.log(`GameVision API listening on port ${PORT}`));
+app.listen(PORT, "0.0.0.0", () => console.log(`GameVision API listening on port ${PORT} (FREE ONLY)`));
