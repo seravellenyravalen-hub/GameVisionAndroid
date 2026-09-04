@@ -83,7 +83,13 @@ async function postOpenRouter(prompt, images, schema) {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${OPENROUTER_API_KEY}`, "HTTP-Referer": "https://gamevision.app", "X-Title": "GameVision" },
     signal: AbortSignal.timeout(20000),
-    body: JSON.stringify({ model: OPENROUTER_MODEL, messages: [{ role: "user", content }], response_format: { type: "json_schema", json_schema: { name: "gamevision_json", strict: true, schema } }, temperature: 0.1 })
+    body: JSON.stringify({
+      model: OPENROUTER_MODEL,
+      messages: [{ role: "user", content }],
+      response_format: { type: "json_schema", json_schema: { name: "gamevision_json", strict: true, schema } },
+      temperature: 0.1,
+      max_tokens: 4000
+    })
   });
   if (!response.ok) { const detail = await response.text(); console.error("OpenRouter request failed", response.status, detail.slice(0, 500)); throw new Error(`OpenRouter upstream error ${response.status}`); }
   const data = await response.json();
