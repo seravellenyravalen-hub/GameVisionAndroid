@@ -1,6 +1,6 @@
 package com.gamevision.companion
 
-/** Local deterministic parser. It only classifies explicit user commands. */
+/** Local deterministic parser. It only classifies commands that are safe to execute without AI. */
 object FastCommandRouter {
     fun parse(input: String): AutomationAction? {
         val value = input.trim()
@@ -17,8 +17,11 @@ object FastCommandRouter {
             lower.matches(Regex("^(open )?(recent apps|recents|recent)$")) -> action("RECENTS")
             lower.matches(Regex("^(open )?notifications?$")) -> action("NOTIFICATIONS")
             lower.matches(Regex("^(open )?quick settings$")) -> action("QUICK_SETTINGS")
-            lower.matches(Regex("^(open|launch|start|run)\\s+.+$")) -> {
-                val target = value.replaceFirst(Regex("^(open|launch|start|run)\\s+", RegexOption.IGNORE_CASE), "").trim()
+            lower.matches(Regex("^(open|launch|start|run)( the)?\\s+.+( app| application)?$")) -> {
+                val target = value
+                    .replaceFirst(Regex("^(open|launch|start|run)( the)?\\s+", RegexOption.IGNORE_CASE), "")
+                    .replaceFirst(Regex("\\s+(app|application)$", RegexOption.IGNORE_CASE), "")
+                    .trim()
                 action("OPEN_APP", target, 150L)
             }
             lower.matches(Regex("^(scroll|swipe)\\s+(up|down|left|right)$")) -> {
