@@ -4,7 +4,6 @@ import android.Manifest
 import android.app.Activity
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.graphics.Color
 import android.media.projection.MediaProjectionManager
 import android.net.Uri
 import android.os.Build
@@ -39,7 +38,7 @@ class MainActivity : Activity() {
     private val audioRequest = 4102
     private val healthExecutor = Executors.newSingleThreadExecutor()
     private val mainHandler = Handler(Looper.getMainLooper())
-    private val defaultServerUrl = "https://gamevision-api-v2-production.up.railway.app"
+    private val defaultServerUrl = "https://gamevision-api.onrender.com"
     private val pages by lazy { listOf(R.id.homePage, R.id.assistantPage, R.id.monitorPage, R.id.activityPage, R.id.settingsPage) }
     private val activityEvents = mutableListOf<String>()
 
