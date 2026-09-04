@@ -2,11 +2,12 @@ import { buildAssistantPrompt, buildAutomationPrompt } from "./assistant.js";
 
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY?.trim() || "";
 const OPENROUTER_MODEL = "openrouter/free";
+// OpenRouter currently accepts at most 3 entries in the `models` fallback array.
+// Keep every entry explicitly free so fallback never selects a paid model.
 const FREE_MODELS = [
   "openrouter/free",
   "google/gemma-4-26b-a4b-it:free",
-  "google/gemma-4-31b-it-20260402:free",
-  "minimax/minimax-m3:free"
+  "google/gemma-4-31b-it-20260402:free"
 ];
 let rotationIndex = 0;
 
