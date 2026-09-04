@@ -24,13 +24,13 @@ android {
         applicationId = "com.gamevision.companion"
         minSdk = 26
         targetSdk = 36
-        versionCode = 4
-        versionName = "1.2.1"
+        versionCode = 5
+        versionName = "1.2.2"
     }
 }
 
 // Keep the checked-in app compatible with older source snapshots while ensuring
-// every Android HTTP client is rewritten to the current Render backend at build time.
+every Android HTTP client is rewritten to the current Render backend at build time.
 val configureProductionBackend by tasks.registering {
     doLast {
         val sourceRoot = file("src")
