@@ -144,7 +144,29 @@ class AutomationController {
         GameVisionAccessibilityService.execute(action) { success, result ->
             handler.post {
                 if (!active.get()) return@post
-                if (!success) { recover(result); return@post }
+                if (!success) {
+                    // Fast routing is an optimization, never a dead end. If an explicit local
+                    // command cannot be executed (for example a game target has no accessibility
+                    // node), hand the same natural-language goal to the vision planner.
+                    if (fastCommand && action.type != "STOP") {
+                        fastCommand = false
+                        history += JSONObject().put("role", "assistant").put("content", "FAST ACTION ${action.type} could not execute: $result")
+                        history += JSONObject().put("role", "user").put("content", "Use vision/AI fallback for the original goal. Do not assume the failed fast action changed the screen.")
+                        postStatus("RECOVERING • fast path unavailable • switching to AI vision")
+                        waitForFreshFrame(lastFrameSequence, lastServerEpoch, MAX_FRAME_WAIT_MS) { ready, sequence, epoch, error ->
+                            if (!active.get()) return@waitForFreshFrame
+                            if (ready) {
+                                lastFrameSequence = sequence; lastServerEpoch = epoch
+                                requestDecision(50)
+                            } else {
+                                stopWithStatus("FAILED • ${error ?: "AI fallback could not obtain a fresh screen"}")
+                            }
+                        }
+                    } else {
+                        recover(result)
+                    }
+                    return@post
+                }
                 history += JSONObject().put("role", "assistant").put("content", "ACTION ${action.type}: ${action.reason}")
                 history += JSONObject().put("role", "user").put("content", "Android result: $result. Re-check the current screen and continue the goal if appropriate.")
                 postStatus("VERIFYING • waiting for a new screen…")
@@ -232,3 +254,5 @@ class AutomationController {
     private fun postStatus(message: String) { handler.post { statusListener?.invoke(message) } }
     fun shutdown() { active.set(false); executor.shutdownNow() }
 }
+
+data class AutomationAction(val type: String, val x: Int, val y: Int, val x2: Int, val y2: Int, val text: String, val durationMs: Long, val waitMs: Long, val reason: String, val confidence: Int, val verify: Boolean, val stopReason: String)
