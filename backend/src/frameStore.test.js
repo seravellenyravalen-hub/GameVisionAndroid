@@ -20,3 +20,19 @@ test("freshness requires a newer sequence and an unexpired frame", () => {
   assert.equal(store.isFresh("user-a", saved.sequence), false);
   assert.equal(store.status("missing").sequence, 0);
 });
+
+test("exposes a stable server epoch so clients can detect a restarted frame store", () => {
+  const store = new FrameStore({ maxAgeMs: 15000, epoch: "test-epoch" });
+  const status = store.status("missing");
+  assert.equal(status.serverEpoch, "test-epoch");
+  const saved = store.put("user-a", [{ role: "full", data: "a" }]);
+  assert.equal(store.status("user-a").serverEpoch, "test-epoch");
+  assert.equal(saved.serverEpoch, "test-epoch");
+});
+
+test("rejects a frame timestamp that is too far in the future", () => {
+  const store = new FrameStore({ maxAgeMs: 15000 });
+  const future = store.put("user-a", [{ role: "full", data: "future" }], Date.now() + 120000);
+  assert.equal(store.isFresh("user-a", future.sequence - 1), false);
+  assert.equal(store.status("user-a").fresh, false);
+});
