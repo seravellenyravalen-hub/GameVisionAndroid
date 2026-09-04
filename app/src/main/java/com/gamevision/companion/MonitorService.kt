@@ -94,10 +94,12 @@ class MonitorService : Service() {
     }
 
     private fun onFrame(imageReader: ImageReader) {
-        if (!running.get() || System.currentTimeMillis() - lastUploadAt < 900L) return
-        if (!uploadBusy.compareAndSet(false, true)) return
-        val image = runCatching { imageReader.acquireLatestImage() }.getOrNull()
-        if (image == null) { uploadBusy.set(false); return }
+        if (!running.get()) return
+        val image = runCatching { imageReader.acquireLatestImage() }.getOrNull() ?: return
+        if (System.currentTimeMillis() - lastUploadAt < 900L || !uploadBusy.compareAndSet(false, true)) {
+            runCatching { image.close() }
+            return
+        }
         val snapshot = try { imageToBitmap(image) } catch (_: Exception) { null } finally { runCatching { image.close() } }
         if (snapshot == null) { uploadBusy.set(false); return }
         lastUploadAt = System.currentTimeMillis()
