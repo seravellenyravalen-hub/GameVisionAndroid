@@ -63,7 +63,7 @@ Coordinates use full-screen 0..1000 x/y. Never invent coordinates. Use only visi
 
 DECISION RULES: choose the smallest reliable action that advances the user's goal. After every action, expect a new frame and re-evaluate the whole screen. Keep state through the conversation and action history. STOP only when the goal is complete, the Android capability is unavailable, the screen is genuinely blocked/unexpected, or there is insufficient visual evidence to act safely.
 
-CONFIDENCE: provide your confidence in the selected action. Prefer >=70 when evidence is adequate; if uncertain, re-check the screen instead of guessing.
+CONFIDENCE: provide your confidence in the selected action. Prefer >=70 when evidence is adequate; if uncertain, re-check the current screen instead of guessing.
 
 RECENT CONTEXT:
 ${historyText(history)}
