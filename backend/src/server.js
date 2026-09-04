@@ -40,12 +40,13 @@ function rememberOpenRouterError(error) {
 function openrouterAvailable() { return providerStatus.openrouterConfigured && Date.now() >= openrouterCooldownUntil; }
 function frameStatus(userId = null) { return frameStore.status(userId); }
 
-function requireFreshFrame(res, userId, minSequence = 0) {
+function requireFreshFrame(res, userId, minSequence = 0, minEpoch = null) {
   const frame = frameStore.get(userId);
   const status = frameStatus(userId);
   if (!frame) { res.status(409).json({ error: "Waiting for the first screen capture", code: "FRAME_NEEDED", frame: status }); return false; }
-  if (frame.sequence <= minSequence) { res.status(409).json({ error: "Waiting for a newer screen capture", code: "FRESH_FRAME_NEEDED", frame: status, minSequence }); return false; }
-  if (Date.now() - frame.capturedAt > MAX_FRAME_AGE_MS) { res.status(409).json({ error: "Waiting for a fresh screen capture", code: "STALE_FRAME", frame: status }); return false; }
+  const epochChanged = minEpoch != null && String(minEpoch) !== frame.serverEpoch;
+  if (!epochChanged && frame.sequence <= minSequence) { res.status(409).json({ error: "Waiting for a newer screen capture", code: "FRESH_FRAME_NEEDED", frame: status, minSequence, minEpoch }); return false; }
+  if (!frameStore.isFresh(userId, minSequence, minEpoch)) { res.status(409).json({ error: "Waiting for a fresh screen capture", code: "STALE_FRAME", frame: status, minSequence, minEpoch }); return false; }
   return true;
 }
 
@@ -114,18 +115,13 @@ const requireAuth = authMiddleware();
 
 app.get("/api/frame-status", requireAuth, (req, res) => res.json({ ...frameStatus(req.authUser.id), user: req.authUser }));
 
-// Capture ingestion is deliberately separate from AI analysis. Monitoring can keep
-// the latest screen fresh without consuming an OpenRouter request every frame.
 app.post("/api/frame", requireAuth, (req, res) => {
   const images = normalizeImages(req.body);
   if (!images.length) return res.status(400).json({ error: "Image payload required", code: "IMAGE_REQUIRED" });
   const frame = frameStore.put(req.authUser.id, images);
-  res.json({ ok: true, frame: { sequence: frame.sequence, capturedAt: frame.capturedAt, ageMs: 0, fresh: true } });
+  res.json({ ok: true, frame: { sequence: frame.sequence, capturedAt: frame.capturedAt, ageMs: 0, fresh: true, serverEpoch: frame.serverEpoch } });
 });
 
-// Explicit AI frame analysis remains available when a caller actually wants an
-// analysis result, but monitoring itself uses /api/frame so free AI is not burned
-// by a background vision loop.
 app.post("/api/analyze-frame", requireAuth, async (req, res) => {
   try {
     const images = normalizeImages(req.body);
@@ -161,10 +157,10 @@ app.post("/api/ask", requireAuth, async (req, res) => {
     const visualRequest = isScreenDependentInstruction(instruction);
     const frame = frameStore.get(req.authUser.id);
     const hasFrame = Boolean(frame);
-    const hasFreshFrame = Boolean(frame && Date.now() - frame.capturedAt <= MAX_FRAME_AGE_MS);
-    if (visualRequest && !hasFrame) {
+    const hasFreshFrame = Boolean(frame && frameStore.isFresh(req.authUser.id));
+    if (visualRequest && !hasFreshFrame) {
       const refunded = await refundCredit(req.authUser.id); reservedCredit = false;
-      return res.status(409).json({ error: "Waiting for the first screen capture", code: "FRAME_NEEDED", frame: frameStatus(req.authUser.id), usage: { creditsRemaining: refunded?.creditsRemaining ?? usage.user.creditsRemaining + 1 } });
+      return res.status(409).json({ error: "Waiting for a fresh screen capture", code: "FRESH_FRAME_NEEDED", frame: frameStatus(req.authUser.id), usage: { creditsRemaining: refunded?.creditsRemaining ?? usage.user.creditsRemaining + 1 } });
     }
     try {
       const images = hasFrame ? frame.images : [];
@@ -188,7 +184,8 @@ app.post("/api/automation/decide", requireAuth, async (req, res) => {
     const goal = String(req.body?.goal || "").trim();
     if (!goal) return res.status(400).json({ error: "Automation goal required", code: "GOAL_REQUIRED" });
     const minSequence = Number(req.body?.minFrameSequence) || 0;
-    if (!requireFreshFrame(res, req.authUser.id, minSequence)) return;
+    const minEpoch = req.body?.minFrameEpoch == null ? null : String(req.body.minFrameEpoch);
+    if (!requireFreshFrame(res, req.authUser.id, minSequence, minEpoch)) return;
     if (!providerStatus.openrouterConfigured) return res.status(503).json({ error: "Free AI is not configured. Configure the OpenRouter key in the server environment.", code: "AI_NOT_CONFIGURED", freeOnly: true });
     if (!openrouterAvailable()) return res.status(429).json({ error: "Free AI is temporarily rate-limited; retry after cooldown", code: "FREE_AI_RATE_LIMITED", frame: frameStatus(req.authUser.id), freeOnly: true });
     const usage = await consumeCredit(req.authUser.id);
