@@ -93,6 +93,7 @@ function providerError(code, status, detail, retryable = false) {
 
 export function classifyOpenRouterFailure(status, detail = "") {
   const text = String(detail || "");
+  if (status === 400) return { code: "OPENROUTER_BAD_REQUEST", retryable: false, detail: `OpenRouter rejected the request: ${text.slice(0, 180)}` };
   if (status === 401 || /invalid.*key|authentication/i.test(text)) return { code: "OPENROUTER_AUTH_FAILED", retryable: false, detail: "OpenRouter rejected the server key. Check the OPENROUTER_API_KEY in Render." };
   if (status === 402 || /insufficient.*credit|payment required/i.test(text)) return { code: "OPENROUTER_CREDITS_REQUIRED", retryable: false, detail: "OpenRouter reported insufficient upstream credits for the selected route." };
   if (status === 408 || /timeout|timed out/i.test(text)) return { code: "OPENROUTER_TIMEOUT", retryable: true, detail: "OpenRouter did not respond before the timeout." };
@@ -101,62 +102,62 @@ export function classifyOpenRouterFailure(status, detail = "") {
   return { code: "FREE_AI_UPSTREAM_ERROR", retryable: true, detail: `OpenRouter request failed with HTTP ${status}.` };
 }
 
-async function postOpenRouter(prompt, images, maxTokens = 650) {
+async function requestOpenRouter(prompt, images, maxTokens, model) {
   const content = [{ type: "text", text: prompt }, ...imagesToOpenRouterContent(images)];
-  const models = nextFreeModels();
+  const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${OPENROUTER_API_KEY}`, "HTTP-Referer": "https://gamevision.app", "X-Title": "GameVision" },
+    signal: AbortSignal.timeout(15000),
+    body: JSON.stringify({
+      model,
+      messages: [{ role: "user", content }],
+      response_format: { type: "json_object" },
+      temperature: 0.1,
+      max_tokens: maxTokens
+    })
+  });
+  if (response.ok) {
+    const data = await response.json();
+    return parseJsonText(data?.choices?.[0]?.message?.content, "OpenRouter free");
+  }
+  const detail = await response.text();
+  const classified = classifyOpenRouterFailure(response.status, detail);
+  console.error("OpenRouter free request failed", response.status, classified.code, classified.detail);
+  throw providerError(classified.code, response.status, classified.detail, classified.retryable);
+}
+
+async function postOpenRouter(prompt, images, maxTokens = 650) {
+  if (!providerStatus.openrouterConfigured) throw providerError("AI_NOT_CONFIGURED", 503, "OpenRouter is not configured on the server.", false);
+
+  // Use the official free router as the primary route. It dynamically selects a currently
+  // available free model with the capabilities required by the request, including vision
+  // and structured output, instead of sending a multi-model request that can be rejected
+  // by the upstream API when one model/parameter combination changes.
+  const attempts = [OPENROUTER_MODEL, ...nextFreeModels().filter((model) => model !== OPENROUTER_MODEL)];
   let lastError = null;
 
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    let response;
+  for (const model of attempts) {
     try {
-      response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${OPENROUTER_API_KEY}`, "HTTP-Referer": "https://gamevision.app", "X-Title": "GameVision" },
-        signal: AbortSignal.timeout(10000),
-        body: JSON.stringify({
-          models,
-          messages: [{ role: "user", content }],
-          response_format: { type: "json_object" },
-          temperature: 0.1,
-          max_tokens: maxTokens,
-          provider: { allow_fallbacks: true, sort: "latency" }
-        })
-      });
+      return await requestOpenRouter(prompt, images, maxTokens, model);
     } catch (error) {
-      lastError = providerError("OPENROUTER_TIMEOUT", 504, "OpenRouter request timed out or the network connection failed.", true);
-      if (attempt === 1) break;
-      await new Promise((resolve) => setTimeout(resolve, 500));
-      continue;
+      lastError = error;
+      if (!error?.retryable && error?.code !== "OPENROUTER_BAD_REQUEST") break;
+      if (error?.code === "OPENROUTER_BAD_REQUEST") continue;
+      await new Promise((resolve) => setTimeout(resolve, 350));
     }
-
-    if (response.ok) {
-      const data = await response.json();
-      const text = data?.choices?.[0]?.message?.content;
-      return parseJsonText(text, "OpenRouter free");
-    }
-
-    const detail = await response.text();
-    const classified = classifyOpenRouterFailure(response.status, detail);
-    console.error("OpenRouter free request failed", response.status, classified.code);
-    lastError = providerError(classified.code, response.status, classified.detail, classified.retryable);
-    if (!classified.retryable || attempt === 1) break;
-    await new Promise((resolve) => setTimeout(resolve, 500));
   }
 
   throw lastError || providerError("FREE_AI_UPSTREAM_ERROR", 502, "OpenRouter free request failed.", true);
 }
 
 export async function analyzeWithOpenRouter(images) {
-  if (!providerStatus.openrouterConfigured) throw providerError("AI_NOT_CONFIGURED", 503, "OpenRouter is not configured on the server.", false);
   return postOpenRouter(analysisPrompt, images, 650);
 }
 
 export async function askWithOpenRouter(images, instruction, history = [], visionFresh = true) {
-  if (!providerStatus.openrouterConfigured) throw providerError("AI_NOT_CONFIGURED", 503, "OpenRouter is not configured on the server.", false);
   return postOpenRouter(`${buildAssistantPrompt(instruction, history, Array.isArray(images) && images.length > 0, visionFresh)}\n\nReturn ONLY valid JSON with keys answer and confidence.`, images, 650);
 }
 
 export async function decideWithOpenRouter(images, goal, history = []) {
-  if (!providerStatus.openrouterConfigured) throw providerError("AI_NOT_CONFIGURED", 503, "OpenRouter is not configured on the server.", false);
   return postOpenRouter(`${buildAutomationPrompt(goal, history)}\n\nReturn ONLY valid JSON with keys type, x, y, x2, y2, text, durationMs, waitMs, reason, confidence, verify, and stopReason.`, images, 500);
 }
