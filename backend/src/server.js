@@ -7,7 +7,7 @@ import { FrameStore } from "./frameStore.js";
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const PROVIDER_COOLDOWN_MS = 60 * 1000;
+const PROVIDER_COOLDOWN_MS = 5 * 1000;
 const MAX_FRAME_AGE_MS = 15000;
 let openrouterCooldownUntil = 0;
 const frameStore = new FrameStore({ maxAgeMs: MAX_FRAME_AGE_MS });
@@ -31,9 +31,9 @@ function normalizeImages(body) {
 
 function rememberOpenRouterError(error) {
   const message = String(error?.message || "");
-  if (/429|rate.?limit|quota|402|insufficient.?credits|credit.?balance/i.test(message)) {
+  if (/429|rate.?limit|quota|402|insufficient.?credits/i.test(message)) {
     openrouterCooldownUntil = Date.now() + PROVIDER_COOLDOWN_MS;
-    console.warn("OpenRouter free route temporarily rate-limited; free model rotation remains enabled.");
+    console.warn("OpenRouter free route temporarily rate-limited; retry window is short and free-model fallback remains enabled.");
   }
 }
 
@@ -189,7 +189,7 @@ app.post("/api/automation/decide", requireAuth, async (req, res) => {
     if (!providerStatus.openrouterConfigured) return res.status(503).json({ error: "Free AI is not configured. Configure the OpenRouter key in the server environment.", code: "AI_NOT_CONFIGURED", freeOnly: true });
     if (!openrouterAvailable()) return res.status(429).json({ error: "Free AI is temporarily rate-limited; retry after cooldown", code: "FREE_AI_RATE_LIMITED", frame: frameStatus(req.authUser.id), freeOnly: true });
     const usage = await consumeCredit(req.authUser.id);
-    if (!usage.allowed) return res.status(429).json({ error: "Your free GameVision allowance has been used. It will reset automatically.", code: "FREE_ALLOWANCE_EXHAUSTED", resetAt: usage.user.resetAt, creditsRemaining: 0 });
+    if (!usage.allowed) return res.status(429).json({ error: "Your free GameVision allowance has been used. It will reset automatically.", resetAt: usage.user.resetAt, creditsRemaining: 0 });
     reservedCredit = true;
     const history = normalizeHistory(req.body?.messages);
     const frame = frameStore.get(req.authUser.id);
