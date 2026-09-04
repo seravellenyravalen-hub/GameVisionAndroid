@@ -39,7 +39,7 @@ test("automation prompt is game agnostic and one-step", () => {
 test("automation prompt defines mode-aware control boundaries", () => {
   const prompt = buildAutomationPrompt("Assist me, but only tap when I tell you.");
   assert.match(prompt, /MIXED/i);
-  assert.match(prompt, /only tap when the user explicitly authorizes/i);
+  assert.match(prompt, /only tap after that explicit authorization/i);
   assert.match(prompt, /guide|explain/i);
 });
 
