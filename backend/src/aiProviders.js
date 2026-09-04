@@ -62,7 +62,7 @@ export const actionSchema = {
   required: ["type", "x", "y", "x2", "y2", "text", "durationMs", "waitMs", "reason", "confidence", "verify", "stopReason"], additionalProperties: false
 };
 
-export const analysisPrompt = `You are GameVision, a generic visual screen analyzer. Analyze the supplied screen images only. Do not assume the screen is a football game, sports game, or any particular genre. The full image is the coordinate reference; region images are higher-detail views of parts of that same screen.\n\nDescribe only what is visibly supported. Identify useful visible UI/game elements with approximate normalized bounding boxes from 0 to 1000. Never invent hidden state, scores, controls, or text. Keep the summary factual and concise. Return ONLY valid JSON with keys summary, state, confidence, elements, and notes.`;
+export const analysisPrompt = `You are GameVision, a generic visual screen analyzer. Analyze only the supplied screen images. The full image is the coordinate reference; top/middle/bottom regions are detail views of the same screen. Identify visible UI/game elements with approximate normalized boxes from 0 to 1000. Cross-check the full image and regions. Never invent hidden state or text. Be concise. Return ONLY JSON with summary, state, confidence, elements, notes.`;
 
 function parseJsonText(text, provider) {
   if (!text) throw new Error(`${provider} returned no JSON text`);
@@ -80,20 +80,20 @@ function nextFreeModels() {
   return [...FREE_MODELS.slice(start), ...FREE_MODELS.slice(0, start)];
 }
 
-async function postOpenRouter(prompt, images) {
+async function postOpenRouter(prompt, images, maxTokens = 650) {
   const content = [{ type: "text", text: prompt }, ...imagesToOpenRouterContent(images)];
   const models = nextFreeModels();
   const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${OPENROUTER_API_KEY}`, "HTTP-Referer": "https://gamevision.app", "X-Title": "GameVision" },
-    signal: AbortSignal.timeout(20000),
+    signal: AbortSignal.timeout(12000),
     body: JSON.stringify({
       models,
       messages: [{ role: "user", content }],
       response_format: { type: "json_object" },
       temperature: 0.1,
-      max_tokens: 1200,
-      provider: { allow_fallbacks: true }
+      max_tokens: maxTokens,
+      provider: { allow_fallbacks: true, sort: "latency" }
     })
   });
   if (!response.ok) { const detail = await response.text(); console.error("OpenRouter free request failed", response.status, detail.slice(0, 500)); throw new Error(`OpenRouter free upstream error ${response.status}`); }
@@ -104,15 +104,15 @@ async function postOpenRouter(prompt, images) {
 
 export async function analyzeWithOpenRouter(images) {
   if (!providerStatus.openrouterConfigured) throw new Error("OpenRouter is not configured");
-  return postOpenRouter(analysisPrompt, images);
+  return postOpenRouter(analysisPrompt, images, 650);
 }
 
 export async function askWithOpenRouter(images, instruction, history = [], visionFresh = true) {
   if (!providerStatus.openrouterConfigured) throw new Error("OpenRouter is not configured");
-  return postOpenRouter(`${buildAssistantPrompt(instruction, history, Array.isArray(images) && images.length > 0, visionFresh)}\n\nReturn ONLY valid JSON with keys answer and confidence.`, images);
+  return postOpenRouter(`${buildAssistantPrompt(instruction, history, Array.isArray(images) && images.length > 0, visionFresh)}\n\nReturn ONLY valid JSON with keys answer and confidence.`, images, 650);
 }
 
 export async function decideWithOpenRouter(images, goal, history = []) {
   if (!providerStatus.openrouterConfigured) throw new Error("OpenRouter is not configured");
-  return postOpenRouter(`${buildAutomationPrompt(goal, history)}\n\nReturn ONLY valid JSON with keys type, x, y, x2, y2, text, durationMs, waitMs, reason, confidence, verify, and stopReason.`, images);
+  return postOpenRouter(`${buildAutomationPrompt(goal, history)}\n\nReturn ONLY valid JSON with keys type, x, y, x2, y2, text, durationMs, waitMs, reason, confidence, verify, and stopReason.`, images, 500);
 }
