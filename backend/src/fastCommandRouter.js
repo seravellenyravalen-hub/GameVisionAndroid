@@ -1,9 +1,3 @@
-const SIMPLE_NAV = [
-  [/^(?:go )?back$/, "BACK"],
-  [/^(?:go )?home$/, "HOME"],
-  /^(?:open )?(?:recent apps|recents|recent)$/.source ? null : null
-];
-
 export function parseFastCommand(input) {
   const value = String(input || "").trim();
   const lower = value.toLowerCase();
@@ -13,7 +7,6 @@ export function parseFastCommand(input) {
   if (/^(?:open )?(?:recent apps|recents|recent)$/.test(lower)) return { type: "RECENTS" };
   if (/^(?:open )?notifications?$/.test(lower)) return { type: "NOTIFICATIONS" };
   if (/^(?:open )?quick settings$/.test(lower)) return { type: "QUICK_SETTINGS" };
-
   const tap = lower.match(/^(?:tap|click|press|touch)\s+(.+)$/i);
   if (tap) return { type: "TAP_TARGET", target: tap[1].trim() };
   const doubleTap = lower.match(/^double tap\s+(.+)$/i);
@@ -24,6 +17,5 @@ export function parseFastCommand(input) {
   if (typeText) return { type: "TYPE_TEXT", text: typeText[1] };
   const wait = lower.match(/^wait\s+(\d+)\s*(?:ms|milliseconds?)?$/i);
   if (wait) return { type: "WAIT", waitMs: Math.min(5000, Math.max(0, Number(wait[1]))) };
-
   return null;
 }
