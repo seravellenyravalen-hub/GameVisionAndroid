@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "start": "node src/server.js",
-    "test": "node --test src/analysis.test.js src/assistant.test.js src/auth.test.js src/aiProviders.test.js src/frameStore.test.js"
+    "test": "node --test src/analysis.test.js src/assistant.test.js src/auth.test.js src/aiProviders.test.js src/frameStore.test.js src/fastCommandRouter.test.js"
   },
   "dependencies": {
     "express": "^5.1.0",
