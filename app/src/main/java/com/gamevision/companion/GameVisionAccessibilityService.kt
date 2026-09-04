@@ -3,6 +3,7 @@ package com.gamevision.companion
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
 import android.graphics.Path
+import android.graphics.Rect
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -34,6 +35,7 @@ class GameVisionAccessibilityService : AccessibilityService() {
             "WAIT" -> { Handler(Looper.getMainLooper()).postDelayed({ callback(true, "wait complete") }, action.waitMs.coerceIn(0, 10000)); return }
             "STOP" -> { callback(true, "stop requested"); return }
             "TYPE_TEXT" -> { typeText(action.text, callback); return }
+            "TAP_TARGET", "DOUBLE_TAP_TARGET", "LONG_PRESS_TARGET" -> { gestureOnTarget(action, callback); return }
             "BACK" -> { performGlobal(action.type, GLOBAL_ACTION_BACK, callback); return }
             "HOME" -> { performGlobal(action.type, GLOBAL_ACTION_HOME, callback); return }
             "RECENTS" -> { performGlobal(action.type, GLOBAL_ACTION_RECENTS, callback); return }
@@ -70,22 +72,75 @@ class GameVisionAccessibilityService : AccessibilityService() {
             }
         }
 
-        val gesture = builder.build()
+        dispatchBuiltGesture(builder.build(), action.type, callback)
+    }
+
+    private fun gestureOnTarget(action: AutomationAction, callback: (Boolean, String) -> Unit) {
+        val target = action.text.trim()
+        if (target.isBlank()) { callback(false, "No target was supplied"); return }
+        val node = findTarget(rootInActiveWindow, target)
+        if (node == null) { callback(false, "Could not find visible target '$target'"); return }
+        val bounds = Rect()
+        node.getBoundsInScreen(bounds)
+        node.recycle()
+        if (bounds.isEmpty || bounds.width() <= 0 || bounds.height() <= 0) { callback(false, "Target '$target' has no usable screen bounds"); return }
+        val x = bounds.centerX().toFloat(); val y = bounds.centerY().toFloat()
+        when (action.type) {
+            "TAP_TARGET" -> {
+                val clicked = runCatching {
+                    val current = findTarget(rootInActiveWindow, target) ?: return@runCatching false
+                    val result = current.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    current.recycle(); result
+                }.getOrDefault(false)
+                if (clicked) callback(true, "target '$target' clicked")
+                else dispatchBuiltGesture(GestureDescription.Builder().apply { addStroke(GestureDescription.StrokeDescription(Path().apply { moveTo(x, y) }, 0, ViewConfiguration.getTapTimeout().toLong().coerceAtLeast(40L))) }.build(), "TAP_TARGET", callback)
+            }
+            "DOUBLE_TAP_TARGET" -> {
+                val d = ViewConfiguration.getTapTimeout().toLong().coerceAtLeast(40L)
+                val builder = GestureDescription.Builder()
+                builder.addStroke(GestureDescription.StrokeDescription(Path().apply { moveTo(x, y) }, 0, d))
+                builder.addStroke(GestureDescription.StrokeDescription(Path().apply { moveTo(x, y) }, d + 90L, d))
+                dispatchBuiltGesture(builder.build(), "DOUBLE_TAP_TARGET", callback)
+            }
+            else -> {
+                val duration = action.durationMs.coerceAtLeast(500L)
+                dispatchBuiltGesture(GestureDescription.Builder().apply { addStroke(GestureDescription.StrokeDescription(Path().apply { moveTo(x, y) }, 0, duration)) }.build(), "LONG_PRESS_TARGET", callback)
+            }
+        }
+    }
+
+    private fun findTarget(root: AccessibilityNodeInfo?, target: String): AccessibilityNodeInfo? {
+        if (root == null) return null
+        val wanted = target.trim().lowercase()
+        fun matches(node: AccessibilityNodeInfo): Boolean {
+            val text = node.text?.toString()?.trim()?.lowercase().orEmpty()
+            val desc = node.contentDescription?.toString()?.trim()?.lowercase().orEmpty()
+            return text == wanted || desc == wanted || text.contains(wanted) || desc.contains(wanted)
+        }
+        if (matches(root)) return root
+        for (i in 0 until root.childCount) {
+            val child = root.getChild(i) ?: continue
+            val found = findTarget(child, target)
+            if (found != null) { if (found !== child) child.recycle(); return found }
+            child.recycle()
+        }
+        root.recycle()
+        return null
+    }
+
+    private fun dispatchBuiltGesture(gesture: GestureDescription, type: String, callback: (Boolean, String) -> Unit) {
         val dispatched = dispatchGesture(gesture, object : GestureResultCallback() {
-            override fun onCompleted(gestureDescription: GestureDescription?) { callback(true, "${action.type} completed") }
-            override fun onCancelled(gestureDescription: GestureDescription?) { callback(false, "${action.type} cancelled by Android") }
+            override fun onCompleted(gestureDescription: GestureDescription?) { callback(true, "$type completed") }
+            override fun onCancelled(gestureDescription: GestureDescription?) { callback(false, "$type cancelled by Android") }
         }, Handler(Looper.getMainLooper()))
-        if (!dispatched) callback(false, "Android rejected ${action.type}")
+        if (!dispatched) callback(false, "Android rejected $type")
     }
 
     private fun addPinch(builder: GestureDescription.Builder, cx: Float, cy: Float, outerX: Float, outerY: Float, duration: Long, outward: Boolean) {
-        var dx = outerX - cx
-        var dy = outerY - cy
+        var dx = outerX - cx; var dy = outerY - cy
         val length = max(40f, kotlin.math.sqrt(dx * dx + dy * dy))
-        dx = dx / length * min(length, 360f)
-        dy = dy / length * min(length, 360f)
-        val startDistance = 40f
-        val endDistance = min(length, 360f)
+        dx = dx / length * min(length, 360f); dy = dy / length * min(length, 360f)
+        val startDistance = 40f; val endDistance = min(length, 360f)
         val start1 = if (outward) Pair(cx - dx * startDistance / endDistance, cy - dy * startDistance / endDistance) else Pair(cx - dx, cy - dy)
         val start2 = if (outward) Pair(cx + dx * startDistance / endDistance, cy + dy * startDistance / endDistance) else Pair(cx + dx, cy + dy)
         val end1 = if (outward) Pair(cx - dx, cy - dy) else Pair(cx, cy)
@@ -95,12 +150,9 @@ class GameVisionAccessibilityService : AccessibilityService() {
     }
 
     private fun addTwoFingerSwipe(builder: GestureDescription.Builder, startX: Float, startY: Float, endX: Float, endY: Float, duration: Long) {
-        val dx = endX - startX
-        val dy = endY - startY
-        val distance = max(1f, kotlin.math.sqrt(dx * dx + dy * dy))
-        val offset = min(55f, distance / 4f)
-        val ox = -dy / distance * offset
-        val oy = dx / distance * offset
+        val dx = endX - startX; val dy = endY - startY
+        val distance = max(1f, kotlin.math.sqrt(dx * dx + dy * dy)); val offset = min(55f, distance / 4f)
+        val ox = -dy / distance * offset; val oy = dx / distance * offset
         builder.addStroke(GestureDescription.StrokeDescription(Path().apply { moveTo(startX + ox, startY + oy); lineTo(endX + ox, endY + oy) }, 0, duration))
         builder.addStroke(GestureDescription.StrokeDescription(Path().apply { moveTo(startX - ox, startY - oy); lineTo(endX - ox, endY - oy) }, 0, duration))
     }
@@ -111,8 +163,7 @@ class GameVisionAccessibilityService : AccessibilityService() {
         if (node == null) { callback(false, "No focused editable field is available"); return }
         val arguments = Bundle().apply { putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text) }
         val success = runCatching { node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments) }.getOrDefault(false)
-        node.recycle()
-        callback(success, if (success) "text entered" else "Android rejected text entry")
+        node.recycle(); callback(success, if (success) "text entered" else "Android rejected text entry")
     }
 
     private fun performGlobal(type: String, actionId: Int, callback: (Boolean, String) -> Unit) {
