@@ -10,7 +10,6 @@ import android.os.Looper
 import android.view.ViewConfiguration
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
-import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 
@@ -158,6 +157,7 @@ class GameVisionAccessibilityService : AccessibilityService() {
         }
     }
 
+    /** Traverses the supplied node tree without recycling caller-owned nodes. */
     private fun findTarget(root: AccessibilityNodeInfo?, target: String): AccessibilityNodeInfo? {
         if (root == null) return null
         val wanted = target.trim().lowercase()
@@ -170,10 +170,12 @@ class GameVisionAccessibilityService : AccessibilityService() {
         for (i in 0 until root.childCount) {
             val child = root.getChild(i) ?: continue
             val found = findTarget(child, target)
-            if (found != null) { if (found !== child) child.recycle(); return found }
+            if (found != null) {
+                if (found !== child) child.recycle()
+                return found
+            }
             child.recycle()
         }
-        root.recycle()
         return null
     }
 
