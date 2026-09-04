@@ -21,6 +21,7 @@ class AutomationController {
     private val handler = Handler(Looper.getMainLooper())
     private val active = AtomicBoolean(false)
     private var serverUrl = ""
+    private var authToken = ""
     private var goal = ""
     private var history = mutableListOf<JSONObject>()
     private var steps = 0
@@ -29,13 +30,15 @@ class AutomationController {
     private var lastFrameSequence = 0L
     private var statusListener: ((String) -> Unit)? = null
 
-    fun start(server: String, requestedGoal: String, previousMessages: List<JSONObject>, listener: (String) -> Unit): Boolean {
+    fun start(server: String, token: String, requestedGoal: String, previousMessages: List<JSONObject>, listener: (String) -> Unit): Boolean {
         if (active.get()) return false
         if (!GameVisionAccessibilityService.isEnabled()) {
             listener("Enable GameVision Accessibility in Android Settings before using AUTO mode.")
             return false
         }
         serverUrl = server.trim().removeSuffix("/")
+        authToken = token.trim()
+        if (authToken.isBlank()) { listener("Sign in again before using AUTO mode."); return false }
         goal = requestedGoal.trim()
         history = previousMessages.takeLast(10).toMutableList()
         steps = 0; failures = 0; lowConfidenceRetries = 0; lastFrameSequence = 0L; statusListener = listener; active.set(true)
@@ -63,13 +66,15 @@ class AutomationController {
         try {
             val connection = URL("$serverUrl/api/automation/decide").openConnection() as HttpURLConnection
             connection.requestMethod = "POST"; connection.connectTimeout = 7000; connection.readTimeout = 22000; connection.doOutput = true
-            connection.setRequestProperty("Content-Type", "application/json"); connection.setRequestProperty("Accept", "application/json")
+            connection.setRequestProperty("Content-Type", "application/json"); connection.setRequestProperty("Accept", "application/json"); connection.setRequestProperty("Authorization", "Bearer $authToken")
             val payload = JSONObject().put("goal", goal).put("minFrameSequence", lastFrameSequence).put("messages", JSONArray(history.map { it.toString() }))
             connection.outputStream.use { it.write(payload.toString().toByteArray(Charsets.UTF_8)) }
             val code = connection.responseCode
             val body = (if (code in 200..299) connection.inputStream else connection.errorStream)?.bufferedReader()?.use { it.readText() }.orEmpty()
             connection.disconnect()
 
+            if (code == 401) { stop("session expired — sign in again"); return }
+            if (code == 429 && body.contains("FREE_ALLOWANCE_EXHAUSTED")) { stop("free allowance used — it resets automatically"); return }
             if (code == 409) {
                 postStatus("WAITING • fresh screen…")
                 waitForFreshFrame(lastFrameSequence, MAX_FRAME_WAIT_MS) { ready, sequence, error ->
@@ -138,9 +143,11 @@ class AutomationController {
                 try {
                     val connection = URL("$serverUrl/api/frame-status").openConnection() as HttpURLConnection
                     connection.requestMethod = "GET"; connection.connectTimeout = 4000; connection.readTimeout = 5000
+                    connection.setRequestProperty("Authorization", "Bearer $authToken")
                     val code = connection.responseCode
                     val body = (if (code in 200..299) connection.inputStream else connection.errorStream)?.bufferedReader()?.use { it.readText() }.orEmpty()
                     connection.disconnect()
+                    if (code == 401) { handler.post { callback(false, minSequence, "Session expired — sign in again") }; return@execute }
                     if (code !in 200..299) throw IllegalStateException("HTTP $code")
                     val json = JSONObject(body); val sequence = json.optLong("sequence", 0L); val fresh = json.optBoolean("fresh", false)
                     if (sequence > minSequence && fresh) { handler.post { callback(true, sequence, null) }; return@execute }
