@@ -41,12 +41,12 @@ function rememberOpenRouterError(error) {
 function openrouterAvailable() { return providerStatus.openrouterConfigured && Date.now() >= openrouterCooldownUntil; }
 function frameStatus(userId = null) { return frameStore.status(userId); }
 
-function providerFailure(res, error, fallbackCode = "FREE_AI_UPSTREAM_ERROR") {
+function providerFailure(res, error, fallbackCode = "FREE_AI_UPSTREAM_ERROR", extra = {}) {
   const code = String(error?.code || fallbackCode);
   const status = Number(error?.status) || 502;
   const retryable = Boolean(error?.retryable ?? status >= 500 || status === 429);
   const safeError = String(error?.message || "Free AI provider request failed").replace(/[\r\n]+/g, " ").slice(0, 240);
-  return res.status(status >= 400 && status < 600 ? status : 502).json({ error: safeError, code, retryable, freeOnly: true });
+  return res.status(status >= 400 && status < 600 ? status : 502).json({ error: safeError, code, retryable, freeOnly: true, ...extra });
 }
 
 function requireFreshFrame(res, userId, minSequence = 0, minEpoch = null) {
@@ -178,12 +178,7 @@ app.post("/api/ask", requireAuth, async (req, res) => {
     } catch (error) {
       rememberOpenRouterError(error);
       const refunded = await refundCredit(req.authUser.id); reservedCredit = false;
-      const failure = providerFailure(res, error);
-      if (failure) {
-        // Preserve the usage data without leaking provider secrets.
-        return res.status(Number(error?.status) || 502).json({ error: String(error?.message || "Free AI provider request failed"), code: String(error?.code || "FREE_AI_UPSTREAM_ERROR"), retryable: Boolean(error?.retryable ?? true), usage: { creditsRemaining: refunded?.creditsRemaining ?? usage.user.creditsRemaining }, freeOnly: true });
-      }
-      return failure;
+      return providerFailure(res, error, "FREE_AI_UPSTREAM_ERROR", { usage: { creditsRemaining: refunded?.creditsRemaining ?? usage.user.creditsRemaining } });
     }
   } catch (error) {
     console.error("GameVision assistant error:", error?.message || error);
@@ -213,7 +208,7 @@ app.post("/api/automation/decide", requireAuth, async (req, res) => {
     } catch (error) {
       rememberOpenRouterError(error);
       const refunded = await refundCredit(req.authUser.id); reservedCredit = false;
-      return res.status(Number(error?.status) || 502).json({ error: String(error?.message || "Free action planner failed").replace(/[\r\n]+/g, " ").slice(0, 240), code: String(error?.code || "FREE_AI_UPSTREAM_ERROR"), retryable: Boolean(error?.retryable ?? true), usage: { creditsRemaining: refunded?.creditsRemaining ?? usage.user.creditsRemaining }, freeOnly: true });
+      return providerFailure(res, error, "FREE_AI_UPSTREAM_ERROR", { usage: { creditsRemaining: refunded?.creditsRemaining ?? usage.user.creditsRemaining } });
     }
   } catch (error) {
     console.error("GameVision automation error:", error?.message || error);
