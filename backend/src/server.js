@@ -30,8 +30,9 @@ function normalizeImages(body) {
 }
 
 function rememberOpenRouterError(error) {
+  const code = String(error?.code || "");
   const message = String(error?.message || "");
-  if (/429|rate.?limit|quota|402|insufficient.?credits/i.test(message)) {
+  if (code === "FREE_AI_RATE_LIMITED" || /429|rate.?limit|quota|402|insufficient.?credits/i.test(message)) {
     openrouterCooldownUntil = Date.now() + PROVIDER_COOLDOWN_MS;
     console.warn("OpenRouter free route temporarily rate-limited; retry window is short and free-model fallback remains enabled.");
   }
@@ -39,6 +40,14 @@ function rememberOpenRouterError(error) {
 
 function openrouterAvailable() { return providerStatus.openrouterConfigured && Date.now() >= openrouterCooldownUntil; }
 function frameStatus(userId = null) { return frameStore.status(userId); }
+
+function providerFailure(res, error, fallbackCode = "FREE_AI_UPSTREAM_ERROR") {
+  const code = String(error?.code || fallbackCode);
+  const status = Number(error?.status) || 502;
+  const retryable = Boolean(error?.retryable ?? status >= 500 || status === 429);
+  const safeError = String(error?.message || "Free AI provider request failed").replace(/[\r\n]+/g, " ").slice(0, 240);
+  return res.status(status >= 400 && status < 600 ? status : 502).json({ error: safeError, code, retryable, freeOnly: true });
+}
 
 function requireFreshFrame(res, userId, minSequence = 0, minEpoch = null) {
   const frame = frameStore.get(userId);
@@ -127,15 +136,15 @@ app.post("/api/analyze-frame", requireAuth, async (req, res) => {
     const images = normalizeImages(req.body);
     if (!images.length) return res.status(400).json({ error: "Image payload required", code: "IMAGE_REQUIRED" });
     const frame = frameStore.put(req.authUser.id, images);
-    if (!providerStatus.openrouterConfigured) return res.status(503).json({ error: "Free AI is not configured. Configure the OpenRouter key in the server environment.", code: "AI_NOT_CONFIGURED", freeOnly: true, frame: frameStatus(req.authUser.id) });
-    if (!openrouterAvailable()) return res.status(429).json({ error: "Free AI is temporarily rate-limited", code: "FREE_AI_RATE_LIMITED", frame: frameStatus(req.authUser.id) });
+    if (!providerStatus.openrouterConfigured) return res.status(503).json({ error: "OpenRouter is not configured on the server. Add OPENROUTER_API_KEY in Render.", code: "AI_NOT_CONFIGURED", freeOnly: true, frame: frameStatus(req.authUser.id) });
+    if (!openrouterAvailable()) return res.status(429).json({ error: "The free OpenRouter route is temporarily rate-limited. Retry shortly.", code: "FREE_AI_RATE_LIMITED", frame: frameStatus(req.authUser.id), freeOnly: true, retryable: true });
     try {
       const raw = await analyzeWithOpenRouter(images);
       const analysis = mergeProviderResults(normalizeProviderResult(raw, "openrouter"), null);
       return res.json({ analysis, providers: { primary: "openrouter", secondary: null, primaryOk: true, secondaryOk: false, agreement: null }, activeProvider: "openrouter", frame: frameStatus(req.authUser.id), freeOnly: true, usage: { creditsRemaining: req.authUser.creditsRemaining } });
     } catch (error) {
       rememberOpenRouterError(error);
-      return res.status(502).json({ error: "Free AI temporarily unavailable. Please retry shortly.", code: "FREE_AI_UPSTREAM_ERROR", retryable: true, frame: frameStatus(req.authUser.id), freeOnly: true });
+      return providerFailure(res, error);
     }
   } catch (error) {
     console.error("GameVision frame analysis error:", error?.message || error);
@@ -148,8 +157,8 @@ app.post("/api/ask", requireAuth, async (req, res) => {
   try {
     const instruction = String(req.body?.instruction || "").trim();
     if (!instruction) return res.status(400).json({ error: "Instruction required", code: "INSTRUCTION_REQUIRED" });
-    if (!providerStatus.openrouterConfigured) return res.status(503).json({ error: "Free AI is not configured. Configure the OpenRouter key in the server environment.", code: "AI_NOT_CONFIGURED", freeOnly: true });
-    if (!openrouterAvailable()) return res.status(429).json({ error: "Free AI is temporarily rate-limited; retry after cooldown", code: "FREE_AI_RATE_LIMITED", frame: frameStatus(req.authUser.id), freeOnly: true });
+    if (!providerStatus.openrouterConfigured) return res.status(503).json({ error: "OpenRouter is not configured on the server. Add OPENROUTER_API_KEY in Render.", code: "AI_NOT_CONFIGURED", freeOnly: true });
+    if (!openrouterAvailable()) return res.status(429).json({ error: "The free OpenRouter route is temporarily rate-limited. Retry shortly.", code: "FREE_AI_RATE_LIMITED", frame: frameStatus(req.authUser.id), freeOnly: true, retryable: true });
     const usage = await consumeCredit(req.authUser.id);
     if (!usage.allowed) return res.status(429).json({ error: "Your free GameVision allowance has been used. It will reset automatically.", code: "FREE_ALLOWANCE_EXHAUSTED", resetAt: usage.user.resetAt, creditsRemaining: 0 });
     reservedCredit = true;
@@ -163,16 +172,18 @@ app.post("/api/ask", requireAuth, async (req, res) => {
       return res.status(409).json({ error: "Waiting for a fresh screen capture", code: "FRESH_FRAME_NEEDED", frame: frameStatus(req.authUser.id), usage: { creditsRemaining: refunded?.creditsRemaining ?? usage.user.creditsRemaining + 1 } });
     }
     try {
-      // Do not attach the live screen to ordinary text questions. This keeps the
-      // fast text path independent from multimodal provider availability and
-      // prevents a provider image-processing failure from breaking basic chat.
       const images = visualRequest && hasFrame ? frame.images : [];
       const raw = await askWithOpenRouter(images, instruction, history, visualRequest && hasFreshFrame);
       return res.json({ reply: normalizeAssistantReply(raw), provider: "openrouter", visionUsed: images.length > 0, visionFresh: visualRequest && hasFreshFrame, frame: frameStatus(req.authUser.id), freeOnly: true, usage: { creditsRemaining: usage.user.creditsRemaining }, instruction: buildAssistantPrompt(instruction, history, images.length > 0, visualRequest && hasFreshFrame).split("CURRENT USER MESSAGE:\n")[1] || instruction });
     } catch (error) {
       rememberOpenRouterError(error);
       const refunded = await refundCredit(req.authUser.id); reservedCredit = false;
-      return res.status(502).json({ error: "Free AI temporarily unavailable. Your GameVision credit was preserved. Please retry shortly.", code: "FREE_AI_UPSTREAM_ERROR", retryable: true, usage: { creditsRemaining: refunded?.creditsRemaining ?? usage.user.creditsRemaining }, freeOnly: true });
+      const failure = providerFailure(res, error);
+      if (failure) {
+        // Preserve the usage data without leaking provider secrets.
+        return res.status(Number(error?.status) || 502).json({ error: String(error?.message || "Free AI provider request failed"), code: String(error?.code || "FREE_AI_UPSTREAM_ERROR"), retryable: Boolean(error?.retryable ?? true), usage: { creditsRemaining: refunded?.creditsRemaining ?? usage.user.creditsRemaining }, freeOnly: true });
+      }
+      return failure;
     }
   } catch (error) {
     console.error("GameVision assistant error:", error?.message || error);
@@ -189,10 +200,10 @@ app.post("/api/automation/decide", requireAuth, async (req, res) => {
     const minSequence = Number(req.body?.minFrameSequence) || 0;
     const minEpoch = req.body?.minFrameEpoch == null ? null : String(req.body.minFrameEpoch);
     if (!requireFreshFrame(res, req.authUser.id, minSequence, minEpoch)) return;
-    if (!providerStatus.openrouterConfigured) return res.status(503).json({ error: "Free AI is not configured. Configure the OpenRouter key in the server environment.", code: "AI_NOT_CONFIGURED", freeOnly: true });
-    if (!openrouterAvailable()) return res.status(429).json({ error: "Free AI is temporarily rate-limited; retry after cooldown", code: "FREE_AI_RATE_LIMITED", frame: frameStatus(req.authUser.id), freeOnly: true });
+    if (!providerStatus.openrouterConfigured) return res.status(503).json({ error: "OpenRouter is not configured on the server. Add OPENROUTER_API_KEY in Render.", code: "AI_NOT_CONFIGURED", freeOnly: true });
+    if (!openrouterAvailable()) return res.status(429).json({ error: "The free OpenRouter route is temporarily rate-limited. Retry shortly.", code: "FREE_AI_RATE_LIMITED", frame: frameStatus(req.authUser.id), freeOnly: true, retryable: true });
     const usage = await consumeCredit(req.authUser.id);
-    if (!usage.allowed) return res.status(429).json({ error: "Your free GameVision allowance has been used. It will reset automatically.", resetAt: usage.user.resetAt, creditsRemaining: 0 });
+    if (!usage.allowed) return res.status(429).json({ error: "Your free GameVision allowance has been used. It will reset automatically.", code: "FREE_ALLOWANCE_EXHAUSTED", resetAt: usage.user.resetAt, creditsRemaining: 0 });
     reservedCredit = true;
     const history = normalizeHistory(req.body?.messages);
     const frame = frameStore.get(req.authUser.id);
@@ -202,7 +213,7 @@ app.post("/api/automation/decide", requireAuth, async (req, res) => {
     } catch (error) {
       rememberOpenRouterError(error);
       const refunded = await refundCredit(req.authUser.id); reservedCredit = false;
-      return res.status(502).json({ error: "Free action planner temporarily unavailable. Your GameVision credit was preserved. Please retry shortly.", code: "FREE_AI_UPSTREAM_ERROR", retryable: true, usage: { creditsRemaining: refunded?.creditsRemaining ?? usage.user.creditsRemaining }, freeOnly: true });
+      return res.status(Number(error?.status) || 502).json({ error: String(error?.message || "Free action planner failed").replace(/[\r\n]+/g, " ").slice(0, 240), code: String(error?.code || "FREE_AI_UPSTREAM_ERROR"), retryable: Boolean(error?.retryable ?? true), usage: { creditsRemaining: refunded?.creditsRemaining ?? usage.user.creditsRemaining }, freeOnly: true });
     }
   } catch (error) {
     console.error("GameVision automation error:", error?.message || error);
