@@ -1,11 +1,15 @@
 import { buildAssistantPrompt, buildAutomationPrompt } from "./assistant.js";
 
+const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY?.trim() || "";
+const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || "openai/gpt-4o";
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY?.trim() || "";
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-5.6-sol";
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY?.trim() || "";
 const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3.8-flash";
 
 export const providerStatus = {
+  openrouterConfigured: OPENROUTER_API_KEY.length > 0,
+  openrouterModel: OPENROUTER_MODEL,
   openaiConfigured: OPENAI_API_KEY.length > 0,
   openaiModel: OPENAI_MODEL,
   geminiConfigured: GEMINI_API_KEY.length > 0,
@@ -13,6 +17,9 @@ export const providerStatus = {
 };
 
 console.log("GameVision AI configuration:", {
+  openrouterConfigured: providerStatus.openrouterConfigured,
+  openrouterKeyLength: OPENROUTER_API_KEY.length,
+  openrouterModel: OPENROUTER_MODEL,
   openaiConfigured: providerStatus.openaiConfigured,
   openaiKeyLength: OPENAI_API_KEY.length,
   geminiConfigured: providerStatus.geminiConfigured,
@@ -54,13 +61,14 @@ export const analysisPrompt = `You are GameVision, a generic visual screen analy
 function parseJsonText(text, provider) {
   if (!text) throw new Error(`${provider} returned no JSON text`);
   try { return JSON.parse(text); } catch {
-    const fenced = text.match(/```(?:json)?\\s*([\\s\\S]*?)\\s*```/i)?.[1];
+    const fenced = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/i)?.[1];
     if (fenced) return JSON.parse(fenced);
     throw new Error(`${provider} returned invalid JSON`);
   }
 }
 
 function imagesToOpenAIContent(images) { return (Array.isArray(images) ? images : []).map((image) => ({ type: "input_image", image_url: `data:${image.mimeType};base64,${image.data}`, detail: "high" })); }
+function imagesToOpenRouterContent(images) { return (Array.isArray(images) ? images : []).map((image) => ({ type: "image_url", image_url: { url: `data:${image.mimeType};base64,${image.data}` } })); }
 function imagesToGeminiParts(images) { return (Array.isArray(images) ? images : []).map((image) => ({ inline_data: { mime_type: image.mimeType, data: image.data } })); }
 
 async function postOpenAI(body) {
@@ -69,11 +77,40 @@ async function postOpenAI(body) {
   const data = await response.json(); return parseJsonText(data?.output_text, "OpenAI");
 }
 
+async function postOpenRouter(prompt, images, schema) {
+  const content = [{ type: "text", text: prompt }, ...imagesToOpenRouterContent(images)];
+  const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${OPENROUTER_API_KEY}`, "HTTP-Referer": "https://gamevision.app", "X-Title": "GameVision" },
+    signal: AbortSignal.timeout(20000),
+    body: JSON.stringify({ model: OPENROUTER_MODEL, messages: [{ role: "user", content }], response_format: { type: "json_schema", json_schema: { name: "gamevision_json", strict: true, schema } }, temperature: 0.1 })
+  });
+  if (!response.ok) { const detail = await response.text(); console.error("OpenRouter request failed", response.status, detail.slice(0, 500)); throw new Error(`OpenRouter upstream error ${response.status}`); }
+  const data = await response.json();
+  const text = data?.choices?.[0]?.message?.content;
+  return parseJsonText(text, "OpenRouter");
+}
+
 async function postGemini(prompt, images, schema, temperature = 0.1) {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
   const response = await fetch(`${url}?key=${encodeURIComponent(GEMINI_API_KEY)}`, { method: "POST", headers: { "Content-Type": "application/json" }, signal: AbortSignal.timeout(20000), body: JSON.stringify({ contents: [{ parts: [{ text: prompt }, ...imagesToGeminiParts(images)] }], generationConfig: { responseMimeType: "application/json", responseSchema: schema, temperature } }) });
   if (!response.ok) { const detail = await response.text(); console.error("Gemini request failed", response.status, detail.slice(0, 500)); throw new Error(`Gemini upstream error ${response.status}`); }
   const data = await response.json(); const text = data?.candidates?.[0]?.content?.parts?.find((part) => typeof part.text === "string")?.text; return parseJsonText(text, "Gemini");
+}
+
+export async function analyzeWithOpenRouter(images) {
+  if (!OPENROUTER_API_KEY) throw new Error("OpenRouter is not configured");
+  return postOpenRouter(analysisPrompt, images, screenSchema);
+}
+
+export async function askWithOpenRouter(images, instruction, history = [], visionFresh = true) {
+  if (!OPENROUTER_API_KEY) throw new Error("OpenRouter is not configured");
+  return postOpenRouter(buildAssistantPrompt(instruction, history, Array.isArray(images) && images.length > 0, visionFresh), images, assistantSchema);
+}
+
+export async function decideWithOpenRouter(images, goal, history = []) {
+  if (!OPENROUTER_API_KEY) throw new Error("OpenRouter is not configured");
+  return postOpenRouter(buildAutomationPrompt(goal, history), images, actionSchema);
 }
 
 export async function analyzeWithOpenAI(images) {
