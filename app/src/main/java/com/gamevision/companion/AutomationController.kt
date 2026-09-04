@@ -31,6 +31,7 @@ class AutomationController {
     private var lowConfidenceRetries = 0
     private var lastFrameSequence = 0L
     private var lastServerEpoch: String? = null
+    private var lastAction: AutomationAction? = null
     private var statusListener: ((String) -> Unit)? = null
     private var fastCommand = false
 
@@ -45,14 +46,15 @@ class AutomationController {
         if (authToken.isBlank()) { listener("FAILED • Sign in again before using AUTO mode."); return false }
         goal = requestedGoal.trim()
         history = previousMessages.takeLast(10).toMutableList()
-        steps = 0; failures = 0; recoveryAttempts = 0; lowConfidenceRetries = 0; lastFrameSequence = 0L; lastServerEpoch = null; statusListener = listener; active.set(true)
+        steps = 0; failures = 0; recoveryAttempts = 0; lowConfidenceRetries = 0; lastFrameSequence = 0L; lastServerEpoch = null; lastAction = null; statusListener = listener; active.set(true)
 
         val fastAction = FastCommandRouter.parse(goal)
         fastCommand = fastAction != null
         if (fastAction != null) {
             postStatus("ACTING • FAST • ${fastAction.type}")
-            if (fastAction.type == "STOP") { stopWithStatus("SUCCESS • stopped by user command", true); return true }
+            if (fastAction.type == "STOP") { stopWithStatus("SUCCESS • stopped by user command"); return true }
             steps = 1
+            lastAction = fastAction
             executeAndVerify(fastAction)
             return true
         }
@@ -60,7 +62,7 @@ class AutomationController {
         postStatus("THINKING • getting a fresh screen…")
         waitForFreshFrame(0L, null, MAX_FRAME_WAIT_MS) { ready, sequence, epoch, error ->
             if (!active.get()) return@waitForFreshFrame
-            if (!ready) { stopWithStatus("FAILED • ${error ?: "No fresh screen capture available"}", false); return@waitForFreshFrame }
+            if (!ready) { stopWithStatus("FAILED • ${error ?: "No fresh screen capture available"}"); return@waitForFreshFrame }
             lastFrameSequence = sequence
             lastServerEpoch = epoch
             requestDecision()
@@ -75,7 +77,7 @@ class AutomationController {
         if (active.getAndSet(false)) handler.post { statusListener?.invoke("FAILED • $reason") }
     }
 
-    private fun stopWithStatus(message: String, success: Boolean) {
+    private fun stopWithStatus(message: String) {
         if (active.getAndSet(false)) handler.post { statusListener?.invoke(message) }
     }
 
@@ -92,7 +94,7 @@ class AutomationController {
 
     private fun decide() {
         if (!active.get()) return
-        if (steps >= MAX_STEPS) { stopWithStatus("FAILED • maximum session steps reached", false); return }
+        if (steps >= MAX_STEPS) { stopWithStatus("FAILED • maximum session steps reached"); return }
         try {
             val connection = URL("$serverUrl/api/automation/decide").openConnection() as HttpURLConnection
             connection.requestMethod = "POST"; connection.connectTimeout = 7000; connection.readTimeout = 22000; connection.doOutput = true
@@ -103,12 +105,9 @@ class AutomationController {
             val code = connection.responseCode
             val body = (if (code in 200..299) connection.inputStream else connection.errorStream)?.bufferedReader()?.use { it.readText() }.orEmpty()
             connection.disconnect()
-            if (code == 401) { stopWithStatus("FAILED • session expired — sign in again", false); return }
-            if (code == 429 && body.contains("FREE_ALLOWANCE_EXHAUSTED")) { stopWithStatus("FAILED • free allowance used — it resets automatically", false); return }
-            if (code == 409) {
-                recover("the screen did not provide a fresh frame")
-                return
-            }
+            if (code == 401) { stopWithStatus("FAILED • session expired — sign in again"); return }
+            if (code == 429 && body.contains("FREE_ALLOWANCE_EXHAUSTED")) { stopWithStatus("FAILED • free allowance used — it resets automatically"); return }
+            if (code == 409) { recover("the screen did not provide a fresh frame"); return }
             if (code !in 200..299) throw IllegalStateException(extractServerError(body, "HTTP $code"))
             val json = JSONObject(body)
             val actionJson = json.optJSONObject("action") ?: throw IllegalStateException("No action returned")
@@ -122,14 +121,14 @@ class AutomationController {
                 confidence = actionJson.optInt("confidence", 0), verify = actionJson.optBoolean("verify", true), stopReason = actionJson.optString("stopReason", "")
             )
             if (!active.get()) return
-            if (action.type == "STOP") { stopWithStatus("FAILED • ${action.stopReason.ifBlank { action.reason.ifBlank { "AI requested stop" } }}", false); return }
+            if (action.type == "STOP") { stopWithStatus("FAILED • ${action.stopReason.ifBlank { action.reason.ifBlank { "AI requested stop" } }}"); return }
             if (action.confidence < 70) {
                 lowConfidenceRetries++
                 postStatus("RECOVERING • AI confidence ${action.confidence}% • retry $lowConfidenceRetries/$LOW_CONFIDENCE_RETRIES")
-                if (lowConfidenceRetries >= LOW_CONFIDENCE_RETRIES) { stopWithStatus("FAILED • AI could not confidently determine the next action", false); return }
+                if (lowConfidenceRetries >= LOW_CONFIDENCE_RETRIES) { stopWithStatus("FAILED • AI could not confidently determine the next action"); return }
                 requestDecision(400); return
             }
-            lowConfidenceRetries = 0; failures = 0
+            lowConfidenceRetries = 0; failures = 0; lastAction = action
             steps++
             executeAndVerify(action)
         } catch (error: Exception) {
@@ -140,14 +139,12 @@ class AutomationController {
 
     private fun executeAndVerify(action: AutomationAction) {
         if (!active.get()) return
+        lastAction = action
         postStatus("ACTING • ${if (fastCommand) "FAST" else "AI"} • ${action.type} • ${action.confidence}%")
         GameVisionAccessibilityService.execute(action) { success, result ->
             handler.post {
                 if (!active.get()) return@post
-                if (!success) {
-                    recover(result)
-                    return@post
-                }
+                if (!success) { recover(result); return@post }
                 history += JSONObject().put("role", "assistant").put("content", "ACTION ${action.type}: ${action.reason}")
                 history += JSONObject().put("role", "user").put("content", "Android result: $result. Re-check the current screen and continue the goal if appropriate.")
                 postStatus("VERIFYING • waiting for a new screen…")
@@ -158,7 +155,7 @@ class AutomationController {
                         if (!active.get()) return@waitForFreshFrame
                         if (ready) {
                             lastFrameSequence = sequenceAfter; lastServerEpoch = epochAfter; failures = 0; recoveryAttempts = 0
-                            if (fastCommand) stopWithStatus("SUCCESS • ${action.type} completed and verified", true) else requestDecision(100)
+                            if (fastCommand) stopWithStatus("SUCCESS • ${action.type} completed and verified") else requestDecision(100)
                         } else {
                             recover(error ?: "expected screen change did not appear")
                         }
@@ -173,7 +170,7 @@ class AutomationController {
         recoveryAttempts++
         postStatus("RECOVERING • $reason • attempt $recoveryAttempts/$MAX_RECOVERY_ATTEMPTS")
         if (recoveryAttempts >= MAX_RECOVERY_ATTEMPTS || failures >= MAX_RECOVERY_ATTEMPTS) {
-            stopWithStatus("FAILED • recovery limit reached: $reason", false)
+            stopWithStatus("FAILED • recovery limit reached: $reason")
             return
         }
         handler.postDelayed({
@@ -182,7 +179,11 @@ class AutomationController {
                 if (!active.get()) return@waitForFreshFrame
                 if (ready) {
                     lastFrameSequence = sequence; lastServerEpoch = epoch
-                    requestDecision(100)
+                    if (fastCommand && lastAction != null) {
+                        executeAndVerify(lastAction!!)
+                    } else {
+                        requestDecision(100)
+                    }
                 } else {
                     recover(error ?: "fresh screen still unavailable")
                 }
