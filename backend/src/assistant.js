@@ -88,7 +88,9 @@ export function normalizeAction(raw) {
   const type = allowed.has(String(raw?.type || "").toUpperCase()) ? String(raw.type).toUpperCase() : "STOP";
   const number = (value) => Math.min(1000, Math.max(0, Number(value) || 0));
   const durationMs = Math.min(5000, Math.max(100, Number(raw?.durationMs) || 600));
-  const waitMs = Math.min(10000, Math.max(0, Number(raw?.waitMs) || 800));
+  const rawType = String(raw?.type || "").toUpperCase();
+  const defaultWait = ["TAP", "DOUBLE_TAP", "LONG_PRESS"].includes(rawType) ? 80 : ["OPEN_APP", "BACK", "HOME", "RECENTS", "NOTIFICATIONS", "QUICK_SETTINGS"].includes(rawType) ? 180 : 350;
+  const waitMs = Math.min(10000, Math.max(0, Number(raw?.waitMs) || defaultWait));
   const confidence = Math.min(100, Math.max(0, Number(raw?.confidence) || 0));
   const action = { type, x: number(raw?.x), y: number(raw?.y), x2: number(raw?.x2), y2: number(raw?.y2), text: typeof raw?.text === "string" ? raw.text.slice(0, 1000) : "", durationMs, waitMs, reason: typeof raw?.reason === "string" ? raw.reason.trim().slice(0, 400) : "", confidence, verify: raw?.verify !== false, stopReason: typeof raw?.stopReason === "string" ? raw.stopReason.trim().slice(0, 400) : "" };
   if (confidence < 60 && type !== "STOP") action.type = "STOP";
