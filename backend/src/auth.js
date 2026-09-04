@@ -4,7 +4,6 @@ import pg from "pg";
 const { Pool } = pg;
 export const FREE_CREDITS = 50;
 export const RESET_WINDOW_MS = 24 * 60 * 60 * 1000;
-const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const PASSWORD_MIN_LENGTH = 8;
 let pool;
 let schemaPromise;
@@ -105,10 +104,11 @@ export async function loginAccount(email, password) {
 export async function getUserForToken(token) {
   if (!token) return null;
   await ensureAuthSchema();
-  const result = await getPool().query(`SELECT u.*, s.expires_at AS session_expires_at FROM gamevision_sessions s JOIN gamevision_users u ON u.id = s.user_id WHERE s.token_hash = $1`, [hashSessionToken(token)]);
+  const tokenHash = hashSessionToken(token);
+  const result = await getPool().query(`SELECT u.*, s.expires_at AS session_expires_at FROM gamevision_sessions s JOIN gamevision_users u ON u.id = s.user_id WHERE s.token_hash = $1`, [tokenHash]);
   if (!result.rows[0]) return null;
   const row = result.rows[0];
-  if (new Date(row.session_expires_at).getTime() <= Date.now()) { await getPool().query(`DELETE FROM gamevision_sessions WHERE token_hash = $1`, [hashSessionToken(token)]); return null; }
+  if (new Date(row.session_expires_at).getTime() <= Date.now()) { await getPool().query(`DELETE FROM gamevision_sessions WHERE token_hash = $1`, [tokenHash]); return null; }
   const user = await refreshAllowance(getPool(), row);
   return publicUser(user);
 }
@@ -142,11 +142,13 @@ export function authMiddleware() {
   return async (req, res, next) => {
     try {
       const header = String(req.headers.authorization || "");
-      const token = header.startsWith("Bearer ") ? header.slice(7).trim() : "";
-      const user = await getUserForToken(token);
+      const bearer = header.startsWith("Bearer ") ? header.slice(7).trim() : "";
+      const cookies = String(req.headers.cookie || "").split(";").map((item) => item.trim());
+      const cookieToken = cookies.find((item) => item.startsWith("gv_session="))?.slice("gv_session=".length) || "";
+      const user = await getUserForToken(bearer || cookieToken);
       if (!user) return res.status(401).json({ error: "Sign in required", code: "AUTH_REQUIRED" });
       req.authUser = user;
-      req.authToken = token;
+      req.authToken = bearer || cookieToken;
       next();
     } catch (error) { console.error("Authentication error:", error?.message || error); res.status(503).json({ error: "Account service unavailable", code: "AUTH_UNAVAILABLE" }); }
   };
