@@ -34,6 +34,7 @@ class GameVisionAccessibilityService : AccessibilityService() {
         when (action.type) {
             "WAIT" -> { Handler(Looper.getMainLooper()).postDelayed({ callback(true, "wait complete") }, action.waitMs.coerceIn(0, 10000)); return }
             "STOP" -> { callback(true, "stop requested"); return }
+            "OPEN_APP" -> { openApp(action.text, callback); return }
             "TYPE_TEXT" -> { typeText(action.text, callback); return }
             "TAP_TARGET", "DOUBLE_TAP_TARGET", "LONG_PRESS_TARGET" -> { gestureOnTarget(action, callback); return }
             "BACK" -> { performGlobal(action.type, GLOBAL_ACTION_BACK, callback); return }
@@ -73,6 +74,54 @@ class GameVisionAccessibilityService : AccessibilityService() {
         }
 
         dispatchBuiltGesture(builder.build(), action.type, callback)
+    }
+
+    /** Launches any user-installed launchable app without depending on its icon being visible. */
+    private fun openApp(request: String, callback: (Boolean, String) -> Unit) {
+        val wanted = normalizeAppName(request)
+        if (wanted.isBlank()) { callback(false, "No app name was supplied"); return }
+        val candidates = packageManager.getInstalledApplications(0).mapNotNull { app ->
+            val label = app.loadLabel(packageManager)?.toString().orEmpty()
+            val launchIntent = packageManager.getLaunchIntentForPackage(app.packageName) ?: return@mapNotNull null
+            Triple(app.packageName, label, launchIntent)
+        }
+        val exact = candidates.firstOrNull { normalizeAppName(it.second) == wanted }
+        val partial = exact ?: candidates.firstOrNull {
+            val label = normalizeAppName(it.second)
+            label.contains(wanted) || wanted.contains(label)
+        }
+        val match = partial ?: run {
+            callback(false, "Could not find an installed launchable app named '$request'")
+            return
+        }
+        val launch = match.third.apply { addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK or android.content.Intent.FLAG_ACTIVITY_CLEAR_TOP) }
+        val packageName = match.first
+        runCatching { startActivity(launch) }.onFailure {
+            callback(false, "Android rejected launch of ${match.second}: ${it.message ?: "unknown error"}")
+            return
+        }
+        waitForForegroundPackage(packageName, match.second, callback)
+    }
+
+    private fun normalizeAppName(value: String): String = value.trim().lowercase().replace(Regex("[^a-z0-9]+"), "")
+
+    /** Do not report success until Accessibility can observe the launched package. */
+    private fun waitForForegroundPackage(expectedPackage: String, label: String, callback: (Boolean, String) -> Unit) {
+        val handler = Handler(Looper.getMainLooper())
+        val deadline = System.currentTimeMillis() + 2500L
+        fun poll() {
+            val current = rootInActiveWindow?.packageName?.toString().orEmpty()
+            if (current == expectedPackage) {
+                callback(true, "$label opened and verified (package=$expectedPackage)")
+                return
+            }
+            if (System.currentTimeMillis() >= deadline) {
+                callback(false, "Launch dispatched but '$label' did not become the foreground app")
+                return
+            }
+            handler.postDelayed(::poll, 120L)
+        }
+        poll()
     }
 
     private fun gestureOnTarget(action: AutomationAction, callback: (Boolean, String) -> Unit) {
