@@ -52,6 +52,9 @@ class AutomationController {
         return true
     }
 
+    fun start(server: String, requestedGoal: String, previousMessages: List<JSONObject>, listener: (String) -> Unit): Boolean =
+        start(server, "", requestedGoal, previousMessages, listener)
+
     fun stop(reason: String = "Stopped by user") {
         if (active.getAndSet(false)) handler.post { statusListener?.invoke("AUTO OFF • $reason") }
     }
@@ -66,7 +69,8 @@ class AutomationController {
         try {
             val connection = URL("$serverUrl/api/automation/decide").openConnection() as HttpURLConnection
             connection.requestMethod = "POST"; connection.connectTimeout = 7000; connection.readTimeout = 22000; connection.doOutput = true
-            connection.setRequestProperty("Content-Type", "application/json"); connection.setRequestProperty("Accept", "application/json"); connection.setRequestProperty("Authorization", "Bearer $authToken")
+            connection.setRequestProperty("Content-Type", "application/json"); connection.setRequestProperty("Accept", "application/json")
+            if (authToken.isNotBlank()) connection.setRequestProperty("Authorization", "Bearer $authToken")
             val payload = JSONObject().put("goal", goal).put("minFrameSequence", lastFrameSequence).put("messages", JSONArray(history.map { it.toString() }))
             connection.outputStream.use { it.write(payload.toString().toByteArray(Charsets.UTF_8)) }
             val code = connection.responseCode
@@ -143,7 +147,7 @@ class AutomationController {
                 try {
                     val connection = URL("$serverUrl/api/frame-status").openConnection() as HttpURLConnection
                     connection.requestMethod = "GET"; connection.connectTimeout = 4000; connection.readTimeout = 5000
-                    connection.setRequestProperty("Authorization", "Bearer $authToken")
+                    if (authToken.isNotBlank()) connection.setRequestProperty("Authorization", "Bearer $authToken")
                     val code = connection.responseCode
                     val body = (if (code in 200..299) connection.inputStream else connection.errorStream)?.bufferedReader()?.use { it.readText() }.orEmpty()
                     connection.disconnect()
