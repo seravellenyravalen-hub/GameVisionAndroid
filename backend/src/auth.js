@@ -90,6 +90,28 @@ export async function createAccount(email, password) {
   }
 }
 
+/** Creates the account and session in one application flow, avoiding a second password lookup. */
+export async function createAccountSession(email, password) {
+  await ensureAuthSchema();
+  const normalized = normalizeEmail(email);
+  if (!isValidEmail(normalized)) throw Object.assign(new Error("Enter a valid email address"), { code: "INVALID_EMAIL" });
+  const passwordHash = await hashPassword(password);
+  const client = await getPool().connect();
+  try {
+    await client.query("BEGIN");
+    const result = await client.query(`INSERT INTO gamevision_users(email, password_hash) VALUES($1, $2) RETURNING *`, [normalized, passwordHash]);
+    const user = result.rows[0];
+    const token = createSessionToken();
+    await client.query(`INSERT INTO gamevision_sessions(token_hash, user_id, expires_at) VALUES($1, $2, NOW() + INTERVAL '30 days')`, [hashSessionToken(token), user.id]);
+    await client.query("COMMIT");
+    return { token, user: publicUser(user) };
+  } catch (error) {
+    await client.query("ROLLBACK");
+    if (error?.code === "23505") throw Object.assign(new Error("An account with that email already exists"), { code: "ACCOUNT_EXISTS" });
+    throw error;
+  } finally { client.release(); }
+}
+
 export async function loginAccount(email, password) {
   await ensureAuthSchema();
   const normalized = normalizeEmail(email);
