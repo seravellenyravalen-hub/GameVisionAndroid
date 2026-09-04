@@ -28,6 +28,7 @@ class AutomationController {
     private var failures = 0
     private var lowConfidenceRetries = 0
     private var lastFrameSequence = 0L
+    private var lastServerEpoch: String? = null
     private var statusListener: ((String) -> Unit)? = null
 
     fun start(server: String, token: String, requestedGoal: String, previousMessages: List<JSONObject>, listener: (String) -> Unit): Boolean {
@@ -41,12 +42,13 @@ class AutomationController {
         if (authToken.isBlank()) { listener("Sign in again before using AUTO mode."); return false }
         goal = requestedGoal.trim()
         history = previousMessages.takeLast(10).toMutableList()
-        steps = 0; failures = 0; lowConfidenceRetries = 0; lastFrameSequence = 0L; statusListener = listener; active.set(true)
+        steps = 0; failures = 0; lowConfidenceRetries = 0; lastFrameSequence = 0L; lastServerEpoch = null; statusListener = listener; active.set(true)
         listener("AUTO ON • getting a fresh screen…")
-        waitForFreshFrame(0L, MAX_FRAME_WAIT_MS) { ready, sequence, error ->
+        waitForFreshFrame(0L, null, MAX_FRAME_WAIT_MS) { ready, sequence, epoch, error ->
             if (!active.get()) return@waitForFreshFrame
             if (!ready) { stop(error ?: "No fresh screen capture available"); return@waitForFreshFrame }
             lastFrameSequence = sequence
+            lastServerEpoch = epoch
             requestDecision()
         }
         return true
@@ -71,7 +73,11 @@ class AutomationController {
             connection.requestMethod = "POST"; connection.connectTimeout = 7000; connection.readTimeout = 22000; connection.doOutput = true
             connection.setRequestProperty("Content-Type", "application/json"); connection.setRequestProperty("Accept", "application/json")
             if (authToken.isNotBlank()) connection.setRequestProperty("Authorization", "Bearer $authToken")
-            val payload = JSONObject().put("goal", goal).put("minFrameSequence", lastFrameSequence).put("messages", JSONArray(history.map { it.toString() }))
+            val payload = JSONObject()
+                .put("goal", goal)
+                .put("minFrameSequence", lastFrameSequence)
+                .put("minFrameEpoch", lastServerEpoch)
+                .put("messages", JSONArray(history.map { it.toString() }))
             connection.outputStream.use { it.write(payload.toString().toByteArray(Charsets.UTF_8)) }
             val code = connection.responseCode
             val body = (if (code in 200..299) connection.inputStream else connection.errorStream)?.bufferedReader()?.use { it.readText() }.orEmpty()
@@ -81,9 +87,9 @@ class AutomationController {
             if (code == 429 && body.contains("FREE_ALLOWANCE_EXHAUSTED")) { stop("free allowance used — it resets automatically"); return }
             if (code == 409) {
                 postStatus("WAITING • fresh screen…")
-                waitForFreshFrame(lastFrameSequence, MAX_FRAME_WAIT_MS) { ready, sequence, error ->
+                waitForFreshFrame(lastFrameSequence, lastServerEpoch, MAX_FRAME_WAIT_MS) { ready, sequence, epoch, error ->
                     if (!active.get()) return@waitForFreshFrame
-                    if (ready) { lastFrameSequence = sequence; requestDecision(120) }
+                    if (ready) { lastFrameSequence = sequence; lastServerEpoch = epoch; requestDecision(120) }
                     else { failures++; postStatus(error ?: "Fresh screen timeout"); if (failures >= 3) stop("screen capture is not updating") else requestDecision(1000) }
                 }
                 return
@@ -94,7 +100,9 @@ class AutomationController {
             val actionJson = json.optJSONObject("action") ?: throw IllegalStateException("No action returned")
             val frame = json.optJSONObject("frame")
             val sequence = frame?.optLong("sequence", lastFrameSequence) ?: lastFrameSequence
-            if (sequence > lastFrameSequence) lastFrameSequence = sequence
+            val epoch = frame?.optString("serverEpoch", lastServerEpoch.orEmpty())?.ifBlank { lastServerEpoch } ?: lastServerEpoch
+            lastFrameSequence = sequence
+            lastServerEpoch = epoch
             val action = AutomationAction(
                 type = actionJson.optString("type", "STOP"), x = actionJson.optInt("x", 0), y = actionJson.optInt("y", 0),
                 x2 = actionJson.optInt("x2", 0), y2 = actionJson.optInt("y2", 0), text = actionJson.optString("text", ""),
@@ -124,9 +132,9 @@ class AutomationController {
                     postStatus("VERIFYING • waiting for a new screen…")
                     val delay = action.waitMs.coerceIn(0, 5000)
                     handler.postDelayed({
-                        if (active.get()) waitForFreshFrame(lastFrameSequence, MAX_FRAME_WAIT_MS) { ready, sequenceAfter, error ->
+                        if (active.get()) waitForFreshFrame(lastFrameSequence, lastServerEpoch, MAX_FRAME_WAIT_MS) { ready, sequenceAfter, epochAfter, error ->
                             if (!active.get()) return@waitForFreshFrame
-                            if (ready) { lastFrameSequence = sequenceAfter; failures = 0; requestDecision(100) }
+                            if (ready) { lastFrameSequence = sequenceAfter; lastServerEpoch = epochAfter; failures = 0; requestDecision(100) }
                             else { failures++; postStatus(error ?: "Fresh screen timeout"); if (failures >= 3) stop("screen capture is not updating") else requestDecision(900) }
                         }
                     }, delay)
@@ -139,7 +147,7 @@ class AutomationController {
         }
     }
 
-    private fun waitForFreshFrame(minSequence: Long, timeoutMs: Long, callback: (Boolean, Long, String?) -> Unit) {
+    private fun waitForFreshFrame(minSequence: Long, minEpoch: String?, timeoutMs: Long, callback: (Boolean, Long, String?, String?) -> Unit) {
         val deadline = System.currentTimeMillis() + timeoutMs
         fun poll() {
             if (!active.get()) return
@@ -151,14 +159,19 @@ class AutomationController {
                     val code = connection.responseCode
                     val body = (if (code in 200..299) connection.inputStream else connection.errorStream)?.bufferedReader()?.use { it.readText() }.orEmpty()
                     connection.disconnect()
-                    if (code == 401) { handler.post { callback(false, minSequence, "Session expired — sign in again") }; return@execute }
+                    if (code == 401) { handler.post { callback(false, minSequence, minEpoch, "Session expired — sign in again") }; return@execute }
                     if (code !in 200..299) throw IllegalStateException("HTTP $code")
-                    val json = JSONObject(body); val sequence = json.optLong("sequence", 0L); val fresh = json.optBoolean("fresh", false)
-                    if (sequence > minSequence && fresh) { handler.post { callback(true, sequence, null) }; return@execute }
-                    if (System.currentTimeMillis() >= deadline) { handler.post { callback(false, sequence, "Timed out waiting for a fresh screen") }; return@execute }
+                    val json = JSONObject(body)
+                    val sequence = json.optLong("sequence", 0L)
+                    val epoch = json.optString("serverEpoch", "").ifBlank { null }
+                    val fresh = json.optBoolean("fresh", false)
+                    val epochChanged = minEpoch != null && epoch != null && epoch != minEpoch
+                    val sequenceFresh = sequence > minSequence
+                    if (fresh && (sequenceFresh || epochChanged || minEpoch == null)) { handler.post { callback(true, sequence, epoch, null) }; return@execute }
+                    if (System.currentTimeMillis() >= deadline) { handler.post { callback(false, sequence, epoch, "Timed out waiting for a fresh screen") }; return@execute }
                     handler.postDelayed({ poll() }, FRAME_POLL_MS)
                 } catch (error: Exception) {
-                    if (System.currentTimeMillis() >= deadline) handler.post { callback(false, minSequence, "Screen status unavailable: ${error.message ?: "network failure"}") }
+                    if (System.currentTimeMillis() >= deadline) handler.post { callback(false, minSequence, minEpoch, "Screen status unavailable: ${error.message ?: "network failure"}") }
                     else handler.postDelayed({ poll() }, FRAME_POLL_MS)
                 }
             }
