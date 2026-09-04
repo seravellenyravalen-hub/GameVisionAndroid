@@ -2,12 +2,12 @@ import { buildAssistantPrompt, buildAutomationPrompt } from "./assistant.js";
 
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY?.trim() || "";
 const OPENROUTER_MODEL = "openrouter/free";
-// OpenRouter currently accepts at most 3 entries in the `models` fallback array.
-// Keep every entry explicitly free so fallback never selects a paid model.
+// Keep fallbacks current, free, multimodal, and compatible with JSON response_format.
 const FREE_MODELS = [
   "openrouter/free",
+  "google/gemma-4-31b-it:free",
   "google/gemma-4-26b-a4b-it:free",
-  "google/gemma-4-31b-it-20260402:free"
+  "minimax/minimax-m3:free"
 ];
 let rotationIndex = 0;
 
@@ -69,11 +69,15 @@ function parseJsonText(text, provider) {
   try { return JSON.parse(text); } catch {
     const fenced = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/i)?.[1];
     if (fenced) return JSON.parse(fenced);
+    const object = text.match(/\{[\s\S]*\}/)?.[0];
+    if (object) return JSON.parse(object);
     throw new Error(`${provider} returned invalid JSON`);
   }
 }
 
-function imagesToOpenRouterContent(images) { return (Array.isArray(images) ? images : []).map((image) => ({ type: "image_url", image_url: { url: `data:${image.mimeType};base64,${image.data}` } })); }
+function imagesToOpenRouterContent(images) {
+  return (Array.isArray(images) ? images : []).map((image) => ({ type: "image_url", image_url: { url: `data:${image.mimeType};base64,${image.data}` } }));
+}
 
 function nextFreeModels() {
   const start = rotationIndex++ % FREE_MODELS.length;
@@ -83,23 +87,37 @@ function nextFreeModels() {
 async function postOpenRouter(prompt, images, maxTokens = 650) {
   const content = [{ type: "text", text: prompt }, ...imagesToOpenRouterContent(images)];
   const models = nextFreeModels();
-  const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${OPENROUTER_API_KEY}`, "HTTP-Referer": "https://gamevision.app", "X-Title": "GameVision" },
-    signal: AbortSignal.timeout(12000),
-    body: JSON.stringify({
-      models,
-      messages: [{ role: "user", content }],
-      response_format: { type: "json_object" },
-      temperature: 0.1,
-      max_tokens: maxTokens,
-      provider: { allow_fallbacks: true, sort: "latency" }
-    })
-  });
-  if (!response.ok) { const detail = await response.text(); console.error("OpenRouter free request failed", response.status, detail.slice(0, 500)); throw new Error(`OpenRouter free upstream error ${response.status}`); }
-  const data = await response.json();
-  const text = data?.choices?.[0]?.message?.content;
-  return parseJsonText(text, "OpenRouter free");
+  let lastError = null;
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${OPENROUTER_API_KEY}`, "HTTP-Referer": "https://gamevision.app", "X-Title": "GameVision" },
+      signal: AbortSignal.timeout(10000),
+      body: JSON.stringify({
+        models,
+        messages: [{ role: "user", content }],
+        response_format: { type: "json_object" },
+        temperature: 0.1,
+        max_tokens: maxTokens,
+        provider: { allow_fallbacks: true, sort: "latency" }
+      })
+    });
+
+    if (response.ok) {
+      const data = await response.json();
+      const text = data?.choices?.[0]?.message?.content;
+      return parseJsonText(text, "OpenRouter free");
+    }
+
+    const detail = await response.text();
+    console.error("OpenRouter free request failed", response.status, detail.slice(0, 700));
+    lastError = new Error(`OpenRouter free upstream error ${response.status}`);
+    if (![408, 429, 500, 502, 503, 504].includes(response.status) || attempt === 1) break;
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+
+  throw lastError || new Error("OpenRouter free request failed");
 }
 
 export async function analyzeWithOpenRouter(images) {

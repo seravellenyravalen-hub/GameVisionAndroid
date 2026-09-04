@@ -7,7 +7,7 @@ import { FrameStore } from "./frameStore.js";
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const PROVIDER_COOLDOWN_MS = 60 * 1000;
+const PROVIDER_COOLDOWN_MS = 5 * 1000;
 const MAX_FRAME_AGE_MS = 15000;
 let openrouterCooldownUntil = 0;
 const frameStore = new FrameStore({ maxAgeMs: MAX_FRAME_AGE_MS });
@@ -31,9 +31,9 @@ function normalizeImages(body) {
 
 function rememberOpenRouterError(error) {
   const message = String(error?.message || "");
-  if (/429|rate.?limit|quota|402|insufficient.?credits|credit.?balance/i.test(message)) {
+  if (/429|rate.?limit|quota|402|insufficient.?credits/i.test(message)) {
     openrouterCooldownUntil = Date.now() + PROVIDER_COOLDOWN_MS;
-    console.warn("OpenRouter free route temporarily rate-limited; free model rotation remains enabled.");
+    console.warn("OpenRouter free route temporarily rate-limited; retry window is short and free-model fallback remains enabled.");
   }
 }
 
@@ -163,9 +163,12 @@ app.post("/api/ask", requireAuth, async (req, res) => {
       return res.status(409).json({ error: "Waiting for a fresh screen capture", code: "FRESH_FRAME_NEEDED", frame: frameStatus(req.authUser.id), usage: { creditsRemaining: refunded?.creditsRemaining ?? usage.user.creditsRemaining + 1 } });
     }
     try {
-      const images = hasFrame ? frame.images : [];
-      const raw = await askWithOpenRouter(images, instruction, history, hasFreshFrame);
-      return res.json({ reply: normalizeAssistantReply(raw), provider: "openrouter", visionUsed: images.length > 0, visionFresh: hasFreshFrame, frame: frameStatus(req.authUser.id), freeOnly: true, usage: { creditsRemaining: usage.user.creditsRemaining }, instruction: buildAssistantPrompt(instruction, history, images.length > 0, hasFreshFrame).split("CURRENT USER MESSAGE:\n")[1] || instruction });
+      // Do not attach the live screen to ordinary text questions. This keeps the
+      // fast text path independent from multimodal provider availability and
+      // prevents a provider image-processing failure from breaking basic chat.
+      const images = visualRequest && hasFrame ? frame.images : [];
+      const raw = await askWithOpenRouter(images, instruction, history, visualRequest && hasFreshFrame);
+      return res.json({ reply: normalizeAssistantReply(raw), provider: "openrouter", visionUsed: images.length > 0, visionFresh: visualRequest && hasFreshFrame, frame: frameStatus(req.authUser.id), freeOnly: true, usage: { creditsRemaining: usage.user.creditsRemaining }, instruction: buildAssistantPrompt(instruction, history, images.length > 0, visualRequest && hasFreshFrame).split("CURRENT USER MESSAGE:\n")[1] || instruction });
     } catch (error) {
       rememberOpenRouterError(error);
       const refunded = await refundCredit(req.authUser.id); reservedCredit = false;
@@ -189,7 +192,7 @@ app.post("/api/automation/decide", requireAuth, async (req, res) => {
     if (!providerStatus.openrouterConfigured) return res.status(503).json({ error: "Free AI is not configured. Configure the OpenRouter key in the server environment.", code: "AI_NOT_CONFIGURED", freeOnly: true });
     if (!openrouterAvailable()) return res.status(429).json({ error: "Free AI is temporarily rate-limited; retry after cooldown", code: "FREE_AI_RATE_LIMITED", frame: frameStatus(req.authUser.id), freeOnly: true });
     const usage = await consumeCredit(req.authUser.id);
-    if (!usage.allowed) return res.status(429).json({ error: "Your free GameVision allowance has been used. It will reset automatically.", code: "FREE_ALLOWANCE_EXHAUSTED", resetAt: usage.user.resetAt, creditsRemaining: 0 });
+    if (!usage.allowed) return res.status(429).json({ error: "Your free GameVision allowance has been used. It will reset automatically.", resetAt: usage.user.resetAt, creditsRemaining: 0 });
     reservedCredit = true;
     const history = normalizeHistory(req.body?.messages);
     const frame = frameStore.get(req.authUser.id);
