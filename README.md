@@ -40,3 +40,6 @@ This companion processes only visible pixels from the user's approved screen cap
 
 ## Backend
 The production Android client uses `https://gamevision-api.onrender.com`. Keep `OPENROUTER_API_KEY` configured only in the Render service environment. The backend is intentionally free-only and preserves user credits when an upstream AI request fails.
+
+## CI verification
+This branch exists only to run the complete GitHub Actions verification against the current release source before finalizing the APK artifact.
