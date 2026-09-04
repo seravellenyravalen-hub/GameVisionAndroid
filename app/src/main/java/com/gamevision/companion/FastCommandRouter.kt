@@ -35,9 +35,6 @@ object FastCommandRouter {
                 AutomationAction("SWIPE", x, y, x2, y2, "", 450L, 650L, "Deterministic local scroll", 100, true, "")
             }
             lower == "stop" || lower == "cancel" -> action("STOP")
-            value.matches(Regex("^(tap|click|press|touch)\\s+.+$", RegexOption.IGNORE_CASE)) -> action("TAP_TARGET", value.replaceFirst(Regex("^(tap|click|press|touch)\\s+", RegexOption.IGNORE_CASE), ""))
-            value.matches(Regex("^double tap\\s+.+$", RegexOption.IGNORE_CASE)) -> action("DOUBLE_TAP_TARGET", value.replaceFirst(Regex("^double tap\\s+", RegexOption.IGNORE_CASE), ""))
-            value.matches(Regex("^(long press|hold)\\s+.+$", RegexOption.IGNORE_CASE)) -> action("LONG_PRESS_TARGET", value.replaceFirst(Regex("^(long press|hold)\\s+", RegexOption.IGNORE_CASE), ""), 650L)
             value.matches(Regex("^(type|enter|write)\\s+.+$", RegexOption.IGNORE_CASE)) -> action("TYPE_TEXT", value.replaceFirst(Regex("^(type|enter|write)\\s+", RegexOption.IGNORE_CASE), ""), 500L)
             lower.matches(Regex("^wait\\s+\\d+\\s*(ms|milliseconds?)?$")) -> {
                 val ms = Regex("\\d+").find(lower)?.value?.toLongOrNull()?.coerceIn(0L, 5000L) ?: 0L
