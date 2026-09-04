@@ -29,10 +29,10 @@ export function normalizeProviderResult(raw, provider) {
   };
 }
 
-export function mergeProviderResults(openaiResult, geminiResult) {
-  const primary = openaiResult || geminiResult;
+export function mergeProviderResults(primaryResult, secondaryResult) {
+  const primary = primaryResult || secondaryResult;
   if (!primary) throw new Error("No provider result available");
-  if (!openaiResult || !geminiResult) {
+  if (!primaryResult || !secondaryResult) {
     return {
       summary: primary.summary,
       state: primary.state,
@@ -43,31 +43,31 @@ export function mergeProviderResults(openaiResult, geminiResult) {
       provider: primary.provider,
       agreement: null,
       elements: primary.elements,
-      notes: [...primary.notes, `${primary.provider === "openai" ? "OpenAI" : "Gemini"} was the only available vision provider.`].slice(0, 5)
+      notes: [...primary.notes, `${primary.provider} was the only available vision provider.`].slice(0, 5)
     };
   }
 
-  const summaryAgree = openaiResult.summary.toLowerCase() === geminiResult.summary.toLowerCase();
-  const stateAgree = openaiResult.state === geminiResult.state || openaiResult.state === "unknown" || geminiResult.state === "unknown";
+  const summaryAgree = primaryResult.summary.toLowerCase() === secondaryResult.summary.toLowerCase();
+  const stateAgree = primaryResult.state === secondaryResult.state || primaryResult.state === "unknown" || secondaryResult.state === "unknown";
   const agreement = summaryAgree || stateAgree;
   const confidence = agreement
-    ? Math.round(openaiResult.confidence * 0.6 + geminiResult.confidence * 0.4)
-    : Math.min(openaiResult.confidence, geminiResult.confidence);
-  const verified = agreement && openaiResult.confidence >= 80 && geminiResult.confidence >= 80;
+    ? Math.round(primaryResult.confidence * 0.6 + secondaryResult.confidence * 0.4)
+    : Math.min(primaryResult.confidence, secondaryResult.confidence);
+  const verified = agreement && primaryResult.confidence >= 80 && secondaryResult.confidence >= 80;
   return {
-    summary: openaiResult.summary,
-    state: stateAgree ? (openaiResult.state === "unknown" ? geminiResult.state : openaiResult.state) : "uncertain",
+    summary: primaryResult.summary,
+    state: stateAgree ? (primaryResult.state === "unknown" ? secondaryResult.state : primaryResult.state) : "uncertain",
     confidence,
     verified,
     verificationStatus: verified ? "VERIFIED" : agreement && confidence >= 70 ? "LIKELY" : agreement ? "LOW CONFIDENCE" : "UNVERIFIED",
     risk: verified ? "low" : "review",
-    provider: "openai+gemini",
+    provider: `${primaryResult.provider}+${secondaryResult.provider}`,
     agreement,
-    elements: openaiResult.elements.length >= geminiResult.elements.length ? openaiResult.elements : geminiResult.elements,
+    elements: primaryResult.elements.length >= secondaryResult.elements.length ? primaryResult.elements : secondaryResult.elements,
     notes: [
-      ...openaiResult.notes,
-      ...geminiResult.notes,
-      agreement ? "OpenAI primary vision and Gemini cross-check are broadly consistent." : "Vision providers disagree; review the current screen before trusting the result."
+      ...primaryResult.notes,
+      ...secondaryResult.notes,
+      agreement ? `${primaryResult.provider} vision and ${secondaryResult.provider} cross-check are broadly consistent.` : "Vision providers disagree; review the current screen before trusting the result."
     ].filter((value, index, array) => array.indexOf(value) === index).slice(0, 5)
   };
 }
