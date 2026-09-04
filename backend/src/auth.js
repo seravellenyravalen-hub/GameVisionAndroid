@@ -135,6 +135,12 @@ export async function consumeCredit(userId) {
   finally { client.release(); }
 }
 
+export async function refundCredit(userId) {
+  await ensureAuthSchema();
+  const result = await getPool().query(`UPDATE gamevision_users SET credits_remaining = LEAST($1, credits_remaining + 1) WHERE id = $2 RETURNING *`, [FREE_CREDITS, userId]);
+  return result.rows[0] ? publicUser(result.rows[0]) : null;
+}
+
 export function authMiddleware() {
   return async (req, res, next) => {
     try {
