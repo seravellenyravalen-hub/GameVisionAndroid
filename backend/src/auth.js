@@ -1,7 +1,8 @@
 import crypto from "node:crypto";
-import pg from "pg";
+import { createRequire } from "node:module";
 
-const { Pool } = pg;
+const require = createRequire(import.meta.url);
+let Pool;
 export const FREE_CREDITS = 50;
 export const RESET_WINDOW_MS = 24 * 60 * 60 * 1000;
 const PASSWORD_MIN_LENGTH = 8;
@@ -13,6 +14,7 @@ export function isValidEmail(value) { return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(n
 
 function getPool() {
   if (!process.env.DATABASE_URL) throw new Error("DATABASE_URL is not configured");
+  if (!Pool) Pool = require("pg").Pool;
   if (!pool) pool = new Pool({ connectionString: process.env.DATABASE_URL, max: 5, ssl: { rejectUnauthorized: false } });
   return pool;
 }
@@ -66,9 +68,7 @@ export async function verifyPassword(password, stored) {
   } catch { return false; }
 }
 
-function publicUser(row) {
-  return { id: row.id, email: row.email, creditsRemaining: Number(row.credits_remaining), resetAt: row.reset_at, createdAt: row.created_at };
-}
+function publicUser(row) { return { id: row.id, email: row.email, creditsRemaining: Number(row.credits_remaining), resetAt: row.reset_at, createdAt: row.created_at }; }
 
 async function refreshAllowance(client, row) {
   if (new Date(row.reset_at).getTime() > Date.now()) return row;
@@ -127,10 +127,7 @@ export async function consumeCredit(userId) {
     const found = await client.query(`SELECT * FROM gamevision_users WHERE id = $1 FOR UPDATE`, [userId]);
     if (!found.rows[0]) throw Object.assign(new Error("Account not found"), { code: "ACCOUNT_NOT_FOUND" });
     const user = await refreshAllowance(client, found.rows[0]);
-    if (Number(user.credits_remaining) <= 0) {
-      await client.query("COMMIT");
-      return { allowed: false, user: publicUser(user) };
-    }
+    if (Number(user.credits_remaining) <= 0) { await client.query("COMMIT"); return { allowed: false, user: publicUser(user) }; }
     const updated = await client.query(`UPDATE gamevision_users SET credits_remaining = credits_remaining - 1 WHERE id = $1 RETURNING *`, [userId]);
     await client.query("COMMIT");
     return { allowed: true, user: publicUser(updated.rows[0]) };
@@ -147,9 +144,7 @@ export function authMiddleware() {
       const cookieToken = cookies.find((item) => item.startsWith("gv_session="))?.slice("gv_session=".length) || "";
       const user = await getUserForToken(bearer || cookieToken);
       if (!user) return res.status(401).json({ error: "Sign in required", code: "AUTH_REQUIRED" });
-      req.authUser = user;
-      req.authToken = bearer || cookieToken;
-      next();
+      req.authUser = user; req.authToken = bearer || cookieToken; next();
     } catch (error) { console.error("Authentication error:", error?.message || error); res.status(503).json({ error: "Account service unavailable", code: "AUTH_UNAVAILABLE" }); }
   };
 }
