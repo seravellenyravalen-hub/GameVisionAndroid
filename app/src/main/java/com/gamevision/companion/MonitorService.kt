@@ -157,6 +157,8 @@ class MonitorService : Service() {
         try {
             connection.requestMethod = "POST"; connection.connectTimeout = 8000; connection.readTimeout = 20000; connection.doOutput = true
             connection.setRequestProperty("Content-Type", "application/json"); connection.setRequestProperty("Accept", "application/json"); connection.setRequestProperty("User-Agent", "GameVision-Companion/3.1")
+            val token = AuthStore.token(this).orEmpty()
+            if (token.isNotBlank()) connection.setRequestProperty("Authorization", "Bearer $token")
             val jsonImages = images.joinToString(",") { item ->
                 val data = android.util.Base64.encodeToString(item.data, android.util.Base64.NO_WRAP)
                 "{\"data\":\"$data\",\"mimeType\":\"image/jpeg\",\"role\":\"${item.role}\",\"width\":${item.width},\"height\":${item.height},\"x\":${item.x},\"y\":${item.y}}"
