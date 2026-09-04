@@ -153,10 +153,10 @@ class MonitorService : Service() {
     private fun jpeg(bitmap: Bitmap, quality: Int): ByteArray = ByteArrayOutputStream().use { out -> bitmap.compress(Bitmap.CompressFormat.JPEG, quality, out); out.toByteArray() }
 
     private fun uploadFrame(images: List<EncodedImage>) {
-        val connection = URL("$serverUrl/api/analyze-frame").openConnection() as HttpURLConnection
+        val connection = URL("$serverUrl/api/frame").openConnection() as HttpURLConnection
         try {
-            connection.requestMethod = "POST"; connection.connectTimeout = 8000; connection.readTimeout = 20000; connection.doOutput = true
-            connection.setRequestProperty("Content-Type", "application/json"); connection.setRequestProperty("Accept", "application/json"); connection.setRequestProperty("User-Agent", "GameVision-Companion/3.1")
+            connection.requestMethod = "POST"; connection.connectTimeout = 8000; connection.readTimeout = 8000; connection.doOutput = true
+            connection.setRequestProperty("Content-Type", "application/json"); connection.setRequestProperty("Accept", "application/json"); connection.setRequestProperty("User-Agent", "GameVision-Companion/3.2")
             val token = AuthStore.token(this).orEmpty()
             if (token.isNotBlank()) connection.setRequestProperty("Authorization", "Bearer $token")
             val jsonImages = images.joinToString(",") { item ->
@@ -167,12 +167,9 @@ class MonitorService : Service() {
             val code = connection.responseCode
             val body = (if (code in 200..299) connection.inputStream else connection.errorStream)?.bufferedReader()?.use { it.readText() }.orEmpty()
             if (code !in 200..299) throw IllegalStateException("HTTP $code ${body.take(120)}")
-            val analysis = org.json.JSONObject(body).optJSONObject("analysis")
-            val summary = analysis?.optString("summary", "Screen captured") ?: "Screen captured"
-            val state = analysis?.optString("state", "unknown") ?: "unknown"
-            val confidence = analysis?.optInt("confidence", 0) ?: 0
-            val verified = analysis?.optBoolean("verified", false) ?: false
-            updateHud(if (verified) "VERIFIED" else "LIVE", "$state • $confidence% • ${summary.take(120)}")
+            val frame = org.json.JSONObject(body).optJSONObject("frame")
+            val sequence = frame?.optLong("sequence", 0L) ?: 0L
+            updateHud("LIVE", if (sequence > 0) "Screen frame #$sequence • vision ready" else "Screen captured • vision ready")
         } finally { connection.disconnect() }
     }
 
