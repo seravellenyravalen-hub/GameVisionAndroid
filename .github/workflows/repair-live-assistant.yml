@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   repair:
-    if: github.event.head_commit.id == 'e53c36b67e0f08929e44b3336f893615ca00d56d'
+    if: github.event.head_commit.id == '1d6ca0fe8b4e51c4de7622571a2ca569443cf880'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -26,22 +26,18 @@ jobs:
           s = server.read_text()
           old = 'const images = visualRequest && hasFrame ? frame.images : [];'
           new = 'const images = hasFreshFrame ? frame.images : [];'
-          if old not in s:
-              raise SystemExit('server patch anchor not found')
+          if old not in s: raise SystemExit('server patch anchor not found')
           s = s.replace(old, new, 1)
           old2 = 'visionFresh: visualRequest && hasFreshFrame,'
           new2 = 'visionFresh: hasFreshFrame,'
-          if old2 not in s:
-              raise SystemExit('server visionFresh anchor not found')
-          s = s.replace(old2, new2, 1)
-          server.write_text(s)
+          if old2 not in s: raise SystemExit('server visionFresh anchor not found')
+          server.write_text(s.replace(old2, new2, 1))
 
           activity = Path('app/src/main/java/com/gamevision/companion/MainActivity.kt')
           s = activity.read_text()
           old = '''    private fun bindNavigation() {\n        findViewById<LinearLayout>(R.id.navHome).setOnClickListener { showPage(R.id.homePage) }; findViewById<LinearLayout>(R.id.navAssistant).setOnClickListener { showPage(R.id.assistantPage) }\n        findViewById<LinearLayout>(R.id.navMonitor).setOnClickListener { showPage(R.id.monitorPage) }; findViewById<LinearLayout>(R.id.navActivity).setOnClickListener { showPage(R.id.activityPage) }; findViewById<LinearLayout>(R.id.navSettings).setOnClickListener { showPage(R.id.settingsPage) }\n    }'''
           new = '''    private fun bindNavigation() {\n        bindNav(R.id.navHome, R.id.homePage)\n        bindNav(R.id.navAssistant, R.id.assistantPage)\n        bindNav(R.id.navMonitor, R.id.monitorPage)\n        bindNav(R.id.navActivity, R.id.activityPage)\n        bindNav(R.id.navSettings, R.id.settingsPage)\n    }\n\n    private fun bindNav(navId: Int, pageId: Int) {\n        findViewById<LinearLayout>(navId).apply {\n            isClickable = true\n            isFocusable = true\n            setOnClickListener { showPage(pageId) }\n        }\n    }'''
-          if old not in s:
-              raise SystemExit('navigation patch anchor not found')
+          if old not in s: raise SystemExit('navigation patch anchor not found')
           activity.write_text(s.replace(old, new, 1))
           PY
 
@@ -52,12 +48,10 @@ jobs:
           for name in ('navHome', 'navAssistant', 'navMonitor', 'navActivity', 'navSettings'):
               old = f'<LinearLayout android:id="@+id/{name}"'
               new = f'<LinearLayout android:id="@+id/{name}" android:clickable="true" android:focusable="true"'
-              if old not in s:
-                  raise SystemExit(f'layout anchor not found: {name}')
+              if old not in s: raise SystemExit(f'layout anchor not found: {name}')
               s = s.replace(old, new, 1)
           p.write_text(s)
           PY
-
           git diff --check
 
       - name: Test backend
