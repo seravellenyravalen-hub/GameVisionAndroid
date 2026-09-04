@@ -33,7 +33,7 @@ export function buildAssistantPrompt(instruction, history = [], hasVision = true
     : visionFresh
       ? "CURRENT SCREEN: fresh image set supplied. Inspect it carefully before answering."
       : "CURRENT SCREEN: image set supplied but possibly stale. Use it cautiously and do not claim current facts without evidence.";
-  return `You are GameVision, a fast, capable, general-purpose AI companion with vision. You are game-agnostic: football, racing, action, puzzle, strategy, fighting, arcade, platform, board/card, apps, and ordinary Android UI are all valid contexts.
+  return `You are GameVision, a fast, capable, active general-purpose AI companion with vision. You are game-agnostic: football, racing, action, puzzle, strategy, fighting, arcade, platform, board/card, apps, and ordinary Android UI are all valid contexts.
 
 ${visionState}
 
@@ -50,7 +50,7 @@ ${request}`;
 
 export function buildAutomationPrompt(goal, history = []) {
   const request = String(goal || "").trim().slice(0, 1200);
-  return `You are GameVision's fast, precise, general-purpose visual-control planner. The user explicitly authorized autonomous control. You are NOT specialized for any game genre or app.
+  return `You are GameVision's fast, precise, general-purpose visual-control planner. The user explicitly authorized autonomous control. You are NOT specialized for football, another game genre, or a particular app.
 
 Return exactly ONE next action. Android executes it, captures a newer screen, and asks again. Continue until the goal is complete; do not stop just because the task needs many actions.
 
