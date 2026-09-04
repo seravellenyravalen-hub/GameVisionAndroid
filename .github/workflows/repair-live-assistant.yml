@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   repair:
-    if: github.event.head_commit.id == '368cd392186f3b0420477bd8a24d79a4f343111a'
+    if: github.event.head_commit.id == 'e53c36b67e0f08929e44b3336f893615ca00d56d'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -59,7 +59,6 @@ jobs:
           PY
 
           git diff --check
-          git diff -- backend/src/server.js app/src/main/java/com/gamevision/companion/MainActivity.kt app/src/main/res/layout/activity_main.xml
 
       - name: Test backend
         working-directory: backend
