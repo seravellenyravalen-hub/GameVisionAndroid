@@ -96,8 +96,19 @@ class MainActivity : Activity() {
     }
 
     private fun bindNavigation() {
-        findViewById<LinearLayout>(R.id.navHome).setOnClickListener { showPage(R.id.homePage) }; findViewById<LinearLayout>(R.id.navAssistant).setOnClickListener { showPage(R.id.assistantPage) }
-        findViewById<LinearLayout>(R.id.navMonitor).setOnClickListener { showPage(R.id.monitorPage) }; findViewById<LinearLayout>(R.id.navActivity).setOnClickListener { showPage(R.id.activityPage) }; findViewById<LinearLayout>(R.id.navSettings).setOnClickListener { showPage(R.id.settingsPage) }
+        bindNav(R.id.navHome, R.id.homePage)
+        bindNav(R.id.navAssistant, R.id.assistantPage)
+        bindNav(R.id.navMonitor, R.id.monitorPage)
+        bindNav(R.id.navActivity, R.id.activityPage)
+        bindNav(R.id.navSettings, R.id.settingsPage)
+    }
+
+    private fun bindNav(navId: Int, pageId: Int) {
+        findViewById<LinearLayout>(navId).apply {
+            isClickable = true
+            isFocusable = true
+            setOnClickListener { showPage(pageId) }
+        }
     }
 
     private fun showPage(pageId: Int) {

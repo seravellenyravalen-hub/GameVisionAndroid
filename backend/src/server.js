@@ -172,9 +172,9 @@ app.post("/api/ask", requireAuth, async (req, res) => {
       return res.status(409).json({ error: "Waiting for a fresh screen capture", code: "FRESH_FRAME_NEEDED", frame: frameStatus(req.authUser.id), usage: { creditsRemaining: refunded?.creditsRemaining ?? usage.user.creditsRemaining + 1 } });
     }
     try {
-      const images = visualRequest && hasFrame ? frame.images : [];
+      const images = hasFreshFrame ? frame.images : [];
       const raw = await askWithOpenRouter(images, instruction, history, visualRequest && hasFreshFrame);
-      return res.json({ reply: normalizeAssistantReply(raw), provider: "openrouter", visionUsed: images.length > 0, visionFresh: visualRequest && hasFreshFrame, frame: frameStatus(req.authUser.id), freeOnly: true, usage: { creditsRemaining: usage.user.creditsRemaining }, instruction: buildAssistantPrompt(instruction, history, images.length > 0, visualRequest && hasFreshFrame).split("CURRENT USER MESSAGE:\n")[1] || instruction });
+      return res.json({ reply: normalizeAssistantReply(raw), provider: "openrouter", visionUsed: images.length > 0, visionFresh: hasFreshFrame, frame: frameStatus(req.authUser.id), freeOnly: true, usage: { creditsRemaining: usage.user.creditsRemaining }, instruction: buildAssistantPrompt(instruction, history, images.length > 0, visualRequest && hasFreshFrame).split("CURRENT USER MESSAGE:\n")[1] || instruction });
     } catch (error) {
       rememberOpenRouterError(error);
       const refunded = await refundCredit(req.authUser.id); reservedCredit = false;
