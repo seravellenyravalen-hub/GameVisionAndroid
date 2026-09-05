@@ -37,17 +37,19 @@ class AutomationController {
     private var fastCommand = false
     private var aiSessionId: String? = null
 
+    private fun addLiveToolContext() {
+        val context = GameVisionAccessibilityService.liveToolContext()
+        history.removeAll { it.optString("role") == "user" && it.optString("content").startsWith("LIVE ANDROID TOOL STATE:") }
+        history += JSONObject().put("role", "user").put("content", "LIVE ANDROID TOOL STATE:\n$context")
+        if (history.size > 14) history = history.takeLast(14).toMutableList()
+    }
+
     fun start(server: String, token: String, requestedGoal: String, previousMessages: List<JSONObject>, listener: (String) -> Unit): Boolean {
         if (active.get()) return false
-        if (!GameVisionAccessibilityService.isEnabled()) {
-            listener("FAILED • Enable GameVision Accessibility in Android Settings before using AUTO mode.")
-            return false
-        }
-        serverUrl = server.trim().removeSuffix("/")
-        authToken = token.trim()
+        if (!GameVisionAccessibilityService.isEnabled()) { listener("FAILED • Enable GameVision Accessibility in Android Settings before using AUTO mode."); return false }
+        serverUrl = server.trim().removeSuffix("/"); authToken = token.trim()
         if (authToken.isBlank()) { listener("FAILED • Sign in again before using AUTO mode."); return false }
-        goal = requestedGoal.trim()
-        history = previousMessages.takeLast(10).toMutableList()
+        goal = requestedGoal.trim(); history = previousMessages.takeLast(10).toMutableList(); addLiveToolContext()
         steps = 0; failures = 0; recoveryAttempts = 0; lowConfidenceRetries = 0; lastFrameSequence = 0L; lastServerEpoch = null; lastAction = null; statusListener = listener; aiSessionId = UUID.randomUUID().toString(); active.set(true)
 
         val fastAction = FastCommandRouter.parse(goal)
@@ -55,61 +57,51 @@ class AutomationController {
         if (fastAction != null) {
             postStatus("ACTING • FAST • ${fastAction.type}")
             if (fastAction.type == "STOP") { stopWithStatus("SUCCESS • stopped by user command"); return true }
-            steps = 1
-            lastAction = fastAction
-            executeAndVerify(fastAction)
-            return true
+            steps = 1; lastAction = fastAction; executeAndVerify(fastAction); return true
         }
 
-        postStatus("THINKING • getting a fresh screen…")
+        postStatus("THINKING • connecting live screen/tools…")
         waitForFreshFrame(0L, null, MAX_FRAME_WAIT_MS) { ready, sequence, epoch, error ->
             if (!active.get()) return@waitForFreshFrame
-            if (!ready) { stopWithStatus("FAILED • ${error ?: "No fresh screen capture available"}"); return@waitForFreshFrame }
-            lastFrameSequence = sequence
-            lastServerEpoch = epoch
+            if (ready) {
+                lastFrameSequence = sequence; lastServerEpoch = epoch; requestDecision(); return@waitForFreshFrame
+            }
+            // Capture is optional for deterministic Android tool actions. Give AI the live Accessibility state instead of hard-failing.
+            addLiveToolContext()
+            postStatus("THINKING • live screen capture unavailable • using Android tools + AI")
             requestDecision()
         }
         return true
     }
 
-    fun start(server: String, requestedGoal: String, previousMessages: List<JSONObject>, listener: (String) -> Unit): Boolean =
-        start(server, "", requestedGoal, previousMessages, listener)
+    fun start(server: String, requestedGoal: String, previousMessages: List<JSONObject>, listener: (String) -> Unit): Boolean = start(server, "", requestedGoal, previousMessages, listener)
 
-    fun stop(reason: String = "Stopped by user") {
-        if (active.getAndSet(false)) handler.post { statusListener?.invoke("FAILED • $reason") }
-    }
-
-    private fun stopWithStatus(message: String) {
-        if (active.getAndSet(false)) handler.post { statusListener?.invoke(message) }
-    }
-
+    fun stop(reason: String = "Stopped by user") { if (active.getAndSet(false)) handler.post { statusListener?.invoke("FAILED • $reason") } }
+    private fun stopWithStatus(message: String) { if (active.getAndSet(false)) handler.post { statusListener?.invoke(message) } }
     fun isActive() = active.get()
 
     private fun requestDecision(delayMs: Long = 0) {
-        handler.postDelayed({
-            if (active.get()) {
-                postStatus("THINKING • deciding next action…")
-                executor.execute { decide() }
-            }
-        }, delayMs)
+        handler.postDelayed({ if (active.get()) { postStatus("THINKING • AI selecting next tool/action…"); executor.execute { decide() } } }, delayMs)
     }
 
     private fun decide() {
         if (!active.get()) return
         if (steps >= MAX_STEPS) { stopWithStatus("FAILED • maximum session steps reached"); return }
         try {
+            addLiveToolContext()
             val connection = URL("$serverUrl/api/automation/decide").openConnection() as HttpURLConnection
             connection.requestMethod = "POST"; connection.connectTimeout = 7000; connection.readTimeout = 22000; connection.doOutput = true
             connection.setRequestProperty("Content-Type", "application/json"); connection.setRequestProperty("Accept", "application/json")
             if (authToken.isNotBlank()) connection.setRequestProperty("Authorization", "Bearer $authToken")
-            val payload = JSONObject().put("goal", goal).put("aiSessionId", aiSessionId).put("minFrameSequence", lastFrameSequence).put("minFrameEpoch", lastServerEpoch).put("messages", JSONArray(history.map { it.toString() }))
+            val payload = JSONObject().put("goal", goal).put("aiSessionId", aiSessionId).put("minFrameSequence", lastFrameSequence).put("minFrameEpoch", lastServerEpoch).put("allowToolOnly", true).put("messages", JSONArray(history.map { it.toString() }))
             connection.outputStream.use { it.write(payload.toString().toByteArray(Charsets.UTF_8)) }
             val code = connection.responseCode
-            val body = (if (code in 200..299) connection.inputStream else connection.errorStream)?.bufferedReader()?.use { it.readText() }.orEmpty()
-            connection.disconnect()
+            val body = (if (code in 200..299) connection.inputStream else connection.errorStream)?.bufferedReader()?.use { it.readText() }.orEmpty(); connection.disconnect()
             if (code == 401) { stopWithStatus("FAILED • session expired — sign in again"); return }
             if (code == 429 && body.contains("FREE_ALLOWANCE_EXHAUSTED")) { stopWithStatus("FAILED • free allowance used — it resets automatically"); return }
-            if (code == 409) { recover("the screen did not provide a fresh frame"); return }
+            if (code == 409) {
+                addLiveToolContext(); postStatus("RECOVERING • frame unavailable • continuing with live Android tools"); requestDecision(120); return
+            }
             if (code !in 200..299) throw IllegalStateException(extractServerError(body, "HTTP $code"))
             val json = JSONObject(body)
             aiSessionId = json.optString("aiSessionId", aiSessionId.orEmpty()).ifBlank { aiSessionId }
@@ -118,63 +110,40 @@ class AutomationController {
             val sequence = frame?.optLong("sequence", lastFrameSequence) ?: lastFrameSequence
             val epoch = frame?.optString("serverEpoch", lastServerEpoch.orEmpty())?.ifBlank { lastServerEpoch } ?: lastServerEpoch
             lastFrameSequence = sequence; lastServerEpoch = epoch
-            val action = AutomationAction(
-                type = actionJson.optString("type", "STOP"), x = actionJson.optInt("x", 0), y = actionJson.optInt("y", 0), x2 = actionJson.optInt("x2", 0), y2 = actionJson.optInt("y2", 0),
-                text = actionJson.optString("text", ""), durationMs = actionJson.optLong("durationMs", 600), waitMs = actionJson.optLong("waitMs", 800), reason = actionJson.optString("reason", ""),
-                confidence = actionJson.optInt("confidence", 0), verify = actionJson.optBoolean("verify", true), stopReason = actionJson.optString("stopReason", "")
-            )
+            val action = AutomationAction(type = actionJson.optString("type", "STOP"), x = actionJson.optInt("x", 0), y = actionJson.optInt("y", 0), x2 = actionJson.optInt("x2", 0), y2 = actionJson.optInt("y2", 0), text = actionJson.optString("text", ""), durationMs = actionJson.optLong("durationMs", 600), waitMs = actionJson.optLong("waitMs", 800), reason = actionJson.optString("reason", ""), confidence = actionJson.optInt("confidence", 0), verify = actionJson.optBoolean("verify", true), stopReason = actionJson.optString("stopReason", ""))
             if (!active.get()) return
             if (action.type == "STOP") { stopWithStatus("FAILED • ${action.stopReason.ifBlank { action.reason.ifBlank { "AI requested stop" } }}"); return }
             if (action.confidence < 70) {
-                lowConfidenceRetries++
-                postStatus("RECOVERING • AI confidence ${action.confidence}% • retry $lowConfidenceRetries/$LOW_CONFIDENCE_RETRIES")
+                lowConfidenceRetries++; postStatus("RECOVERING • AI confidence ${action.confidence}% • retry $lowConfidenceRetries/$LOW_CONFIDENCE_RETRIES")
                 if (lowConfidenceRetries >= LOW_CONFIDENCE_RETRIES) { stopWithStatus("FAILED • AI could not confidently determine the next action"); return }
                 requestDecision(400); return
             }
-            lowConfidenceRetries = 0; failures = 0; lastAction = action
-            steps++
-            executeAndVerify(action)
-        } catch (error: Exception) {
-            if (!active.get()) return
-            recover(error.message ?: "network failure")
-        }
+            lowConfidenceRetries = 0; failures = 0; lastAction = action; steps++; executeAndVerify(action)
+        } catch (error: Exception) { if (active.get()) recover(error.message ?: "network failure") }
     }
 
     private fun executeAndVerify(action: AutomationAction) {
         if (!active.get()) return
-        lastAction = action
-        postStatus("ACTING • ${if (fastCommand) "FAST" else "AI"} • ${action.type} • ${action.confidence}%")
+        lastAction = action; postStatus("ACTING • ${if (fastCommand) "FAST" else "AI"} • ${action.type} • ${action.confidence}%")
         GameVisionAccessibilityService.execute(action) { success, result ->
             handler.post {
                 if (!active.get()) return@post
                 if (!success) {
                     if (fastCommand && action.type != "STOP") {
-                        fastCommand = false
-                        history += JSONObject().put("role", "assistant").put("content", "FAST ACTION ${action.type} could not execute: $result")
-                        history += JSONObject().put("role", "user").put("content", "Use vision/AI fallback for the original goal. Do not assume the failed fast action changed the screen.")
-                        postStatus("RECOVERING • fast path unavailable • switching to AI vision")
-                        waitForFreshFrame(lastFrameSequence, lastServerEpoch, MAX_FRAME_WAIT_MS) { ready, sequence, epoch, error ->
-                            if (!active.get()) return@waitForFreshFrame
-                            if (ready) {
-                                lastFrameSequence = sequence; lastServerEpoch = epoch
-                                requestDecision(50)
-                            } else stopWithStatus("FAILED • ${error ?: "AI fallback could not obtain a fresh screen"}")
-                        }
+                        fastCommand = false; history += JSONObject().put("role", "assistant").put("content", "FAST ACTION ${action.type} could not execute: $result"); history += JSONObject().put("role", "user").put("content", "Use AI plus Android tools for the original goal. Do not assume the failed action changed the screen."); postStatus("RECOVERING • fast path unavailable • switching to AI tools")
+                        addLiveToolContext(); requestDecision(50)
                     } else recover(result)
                     return@post
                 }
-                history += JSONObject().put("role", "assistant").put("content", "ACTION ${action.type}: ${action.reason}")
-                history += JSONObject().put("role", "user").put("content", "Android result: $result. Re-check the current screen and continue the goal if appropriate.")
-                postStatus("VERIFYING • waiting for a new screen…")
+                history += JSONObject().put("role", "assistant").put("content", "ACTION ${action.type}: ${action.reason}"); history += JSONObject().put("role", "user").put("content", "Android result: $result. Re-check live device state and continue the goal if appropriate."); addLiveToolContext()
+                postStatus("VERIFYING • refreshing live device state…")
                 val delay = action.waitMs.coerceIn(0, 5000)
                 handler.postDelayed({
                     if (!active.get()) return@postDelayed
                     waitForFreshFrame(lastFrameSequence, lastServerEpoch, MAX_FRAME_WAIT_MS) { ready, sequenceAfter, epochAfter, error ->
                         if (!active.get()) return@waitForFreshFrame
-                        if (ready) {
-                            lastFrameSequence = sequenceAfter; lastServerEpoch = epochAfter; failures = 0; recoveryAttempts = 0
-                            if (fastCommand) stopWithStatus("SUCCESS • ${action.type} completed and verified") else requestDecision(100)
-                        } else recover(error ?: "expected screen change did not appear")
+                        if (ready) { lastFrameSequence = sequenceAfter; lastServerEpoch = epochAfter; failures = 0; recoveryAttempts = 0; if (fastCommand) stopWithStatus("SUCCESS • ${action.type} completed and verified") else requestDecision(100) }
+                        else { addLiveToolContext(); failures = 0; recoveryAttempts = 0; postStatus("VERIFIED • using live Android tools (capture unavailable)"); if (fastCommand) stopWithStatus("SUCCESS • ${action.type} completed using Android tools") else requestDecision(100) }
                     }
                 }, delay)
             }
@@ -182,20 +151,9 @@ class AutomationController {
     }
 
     private fun recover(reason: String) {
-        failures++
-        recoveryAttempts++
-        postStatus("RECOVERING • $reason • attempt $recoveryAttempts/$MAX_RECOVERY_ATTEMPTS")
-        if (recoveryAttempts >= MAX_RECOVERY_ATTEMPTS || failures >= MAX_RECOVERY_ATTEMPTS) { stopWithStatus("FAILED • recovery limit reached: $reason"); return }
-        handler.postDelayed({
-            if (!active.get()) return@postDelayed
-            waitForFreshFrame(lastFrameSequence, lastServerEpoch, MAX_FRAME_WAIT_MS) { ready, sequence, epoch, error ->
-                if (!active.get()) return@waitForFreshFrame
-                if (ready) {
-                    lastFrameSequence = sequence; lastServerEpoch = epoch
-                    if (fastCommand && lastAction != null) executeAndVerify(lastAction!!) else requestDecision(100)
-                } else recover(error ?: "fresh screen still unavailable")
-            }
-        }, 350L)
+        failures++; recoveryAttempts++; postStatus("RECOVERING • $reason • attempt $recoveryAttempts/$MAX_RECOVERY_ATTEMPTS")
+        if (recoveryAttempts >= MAX_RECOVERY_ATTEMPTS || failures >= MAX_RECOVERY_ATTEMPTS) { addLiveToolContext(); postStatus("RECOVERING • switching to live Android tool state"); recoveryAttempts = 0; failures = 0; requestDecision(100); return }
+        handler.postDelayed({ if (active.get()) { addLiveToolContext(); requestDecision(100) } }, 350L)
     }
 
     private fun extractServerError(body: String, fallback: String): String = runCatching { val json = JSONObject(body); val code = json.optString("code").ifBlank { "SERVER_ERROR" }; val error = json.optString("error").ifBlank { fallback }; "$code: $error" }.getOrDefault(fallback).take(240)
@@ -209,20 +167,16 @@ class AutomationController {
                     val connection = URL("$serverUrl/api/frame-status").openConnection() as HttpURLConnection
                     connection.requestMethod = "GET"; connection.connectTimeout = 4000; connection.readTimeout = 5000
                     if (authToken.isNotBlank()) connection.setRequestProperty("Authorization", "Bearer $authToken")
-                    val code = connection.responseCode
-                    val body = (if (code in 200..299) connection.inputStream else connection.errorStream)?.bufferedReader()?.use { it.readText() }.orEmpty()
-                    connection.disconnect()
+                    val code = connection.responseCode; val body = (if (code in 200..299) connection.inputStream else connection.errorStream)?.bufferedReader()?.use { it.readText() }.orEmpty(); connection.disconnect()
                     if (code == 401) { handler.post { callback(false, minSequence, minEpoch, "Session expired — sign in again") }; return@execute }
                     if (code !in 200..299) throw IllegalStateException(extractServerError(body, "HTTP $code"))
-                    val json = JSONObject(body)
-                    val sequence = json.optLong("sequence", 0L); val epoch = json.optString("serverEpoch", "").ifBlank { null }; val fresh = json.optBoolean("fresh", false)
+                    val json = JSONObject(body); val sequence = json.optLong("sequence", 0L); val epoch = json.optString("serverEpoch", "").ifBlank { null }; val fresh = json.optBoolean("fresh", false)
                     val epochChanged = minEpoch != null && epoch != null && epoch != minEpoch; val sequenceFresh = sequence > minSequence
                     if (fresh && (sequenceFresh || epochChanged || minEpoch == null)) { handler.post { callback(true, sequence, epoch, null) }; return@execute }
                     if (System.currentTimeMillis() >= deadline) { handler.post { callback(false, sequence, epoch, "Timed out waiting for a fresh screen") }; return@execute }
                     handler.postDelayed({ poll() }, FRAME_POLL_MS)
                 } catch (error: Exception) {
-                    if (System.currentTimeMillis() >= deadline) handler.post { callback(false, minSequence, minEpoch, error.message ?: "screen status unavailable") }
-                    else handler.postDelayed({ poll() }, FRAME_POLL_MS)
+                    if (System.currentTimeMillis() >= deadline) handler.post { callback(false, minSequence, minEpoch, error.message ?: "screen status unavailable") } else handler.postDelayed({ poll() }, FRAME_POLL_MS)
                 }
             }
         }
