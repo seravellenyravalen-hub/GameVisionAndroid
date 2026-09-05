@@ -2,7 +2,7 @@ import express from "express";
 import { mergeProviderResults, normalizeProviderResult } from "./analysis.js";
 import { buildAssistantPrompt, isScreenDependentInstruction, normalizeAction, normalizeAssistantReply, normalizeHistory } from "./assistant.js";
 import { analyzeWithProviders, askWithProviders, decideWithProviders, getProviderStatus } from "./aiProviders.js";
-import { authMiddleware, consumeCredit, createAccount, getUserForToken, loginAccount, logoutToken, ensureAuthSchema, refundCredit } from "./auth.js";
+import { authMiddleware, consumeCredit, createAccount, getUserForToken, loginAccount, logoutToken, reserveAutomationCredit, ensureAuthSchema, refundCredit } from "./auth.js";
 import { FrameStore } from "./frameStore.js";
 
 const app = express();
@@ -56,11 +56,7 @@ app.get("/health", async (req, res) => {
   const ai = getProviderStatus();
   const databaseConfigured = Boolean(process.env.DATABASE_URL);
   const databaseReady = databaseConfigured ? await authReady() : false;
-  res.status(200).json({
-    status: "healthy", service: "gamevision-api", aiConfigured: ai.configured, aiAvailable: ai.available.length > 0,
-    freeOnly: true, provider: ai.lastProvider, providers: ai.providers, availableProviders: ai.available, models: ai.models,
-    authConfigured: databaseConfigured, authReady: databaseReady, frame: frameStatus(), timestamp: new Date().toISOString()
-  });
+  res.status(200).json({ status: "healthy", service: "gamevision-api", aiConfigured: ai.configured, aiAvailable: ai.available.length > 0, freeOnly: true, provider: ai.lastProvider, providers: ai.providers, availableProviders: ai.available, models: ai.models, authConfigured: databaseConfigured, authReady: databaseReady, frame: frameStatus(), timestamp: new Date().toISOString() });
 });
 
 app.get("/", (req, res) => {
@@ -69,41 +65,23 @@ app.get("/", (req, res) => {
 });
 
 app.post("/api/auth/signup", async (req, res) => {
-  try {
-    const user = await createAccount(req.body?.email, req.body?.password);
-    const session = await loginAccount(user.email, req.body?.password);
-    res.status(201).json({ token: session.token, user: session.user });
-  } catch (error) {
-    const status = ["INVALID_EMAIL", "ACCOUNT_EXISTS"].includes(error?.code) ? 400 : 503;
-    res.status(status).json({ error: error?.message || "Account creation failed", code: error?.code || "AUTH_UNAVAILABLE" });
-  }
+  try { const user = await createAccount(req.body?.email, req.body?.password); const session = await loginAccount(user.email, req.body?.password); res.status(201).json({ token: session.token, user: session.user }); }
+  catch (error) { const status = ["INVALID_EMAIL", "ACCOUNT_EXISTS"].includes(error?.code) ? 400 : 503; res.status(status).json({ error: error?.message || "Account creation failed", code: error?.code || "AUTH_UNAVAILABLE" }); }
 });
 
 app.post("/api/auth/login", async (req, res) => {
-  try {
-    const session = await loginAccount(req.body?.email, req.body?.password);
-    res.json({ token: session.token, user: session.user });
-  } catch (error) {
-    const status = error?.code === "INVALID_CREDENTIALS" ? 401 : 503;
-    res.status(status).json({ error: error?.message || "Sign in failed", code: error?.code || "AUTH_UNAVAILABLE" });
-  }
+  try { const session = await loginAccount(req.body?.email, req.body?.password); res.json({ token: session.token, user: session.user }); }
+  catch (error) { const status = error?.code === "INVALID_CREDENTIALS" ? 401 : 503; res.status(status).json({ error: error?.message || "Sign in failed", code: error?.code || "AUTH_UNAVAILABLE" }); }
 });
 
 app.get("/api/auth/me", async (req, res) => {
-  try {
-    const token = String(req.headers.authorization || "").startsWith("Bearer ") ? String(req.headers.authorization).slice(7).trim() : "";
-    const user = await getUserForToken(token);
-    if (!user) return res.status(401).json({ error: "Sign in required", code: "AUTH_REQUIRED" });
-    res.json({ user });
-  } catch { res.status(503).json({ error: "Account service unavailable", code: "AUTH_UNAVAILABLE" }); }
+  try { const token = String(req.headers.authorization || "").startsWith("Bearer ") ? String(req.headers.authorization).slice(7).trim() : ""; const user = await getUserForToken(token); if (!user) return res.status(401).json({ error: "Sign in required", code: "AUTH_REQUIRED" }); res.json({ user }); }
+  catch { res.status(503).json({ error: "Account service unavailable", code: "AUTH_UNAVAILABLE" }); }
 });
 
 app.post("/api/auth/logout", async (req, res) => {
-  try {
-    const token = String(req.headers.authorization || "").startsWith("Bearer ") ? String(req.headers.authorization).slice(7).trim() : "";
-    await logoutToken(token);
-    res.json({ ok: true });
-  } catch { res.status(503).json({ error: "Account service unavailable", code: "AUTH_UNAVAILABLE" }); }
+  try { const token = String(req.headers.authorization || "").startsWith("Bearer ") ? String(req.headers.authorization).slice(7).trim() : ""; await logoutToken(token); res.json({ ok: true }); }
+  catch { res.status(503).json({ error: "Account service unavailable", code: "AUTH_UNAVAILABLE" }); }
 });
 
 const requireAuth = authMiddleware();
@@ -122,17 +100,13 @@ app.post("/api/analyze-frame", requireAuth, async (req, res) => {
     const images = normalizeImages(req.body);
     if (!images.length) return res.status(400).json({ error: "Image payload required", code: "IMAGE_REQUIRED" });
     const frame = frameStore.put(req.authUser.id, images);
-    const ai = getProviderStatus();
-    if (!ai.configured) return res.status(503).json({ error: "No AI provider is configured on the server. Add GEMINI_API_KEY, OPENAI_API_KEY, or OPENROUTER_API_KEY in Render.", code: "AI_NOT_CONFIGURED", freeOnly: true, frame: frameStatus(req.authUser.id) });
+    if (!getProviderStatus().configured) return res.status(503).json({ error: "No AI provider is configured on the server. Add GEMINI_API_KEY, OPENAI_API_KEY, or OPENROUTER_API_KEY in Render.", code: "AI_NOT_CONFIGURED", freeOnly: true, frame: frameStatus(req.authUser.id) });
     try {
       const { result: raw, provider } = await analyzeWithProviders(images);
       const analysis = mergeProviderResults(normalizeProviderResult(raw, provider), null);
       return res.json({ analysis, providers: { active: provider, available: getProviderStatus().available }, activeProvider: provider, frame: frameStatus(req.authUser.id), freeOnly: true, usage: { creditsRemaining: req.authUser.creditsRemaining } });
     } catch (error) { return providerFailure(res, error); }
-  } catch (error) {
-    console.error("GameVision frame analysis error:", error?.message || error);
-    return res.status(502).json({ error: "Unable to analyze frame right now. Please retry.", code: "AI_ANALYSIS_FAILED", retryable: true, freeOnly: true });
-  }
+  } catch (error) { console.error("GameVision frame analysis error:", error?.message || error); return res.status(502).json({ error: "Unable to analyze frame right now. Please retry.", code: "AI_ANALYSIS_FAILED", retryable: true, freeOnly: true }); }
 });
 
 app.post("/api/ask", requireAuth, async (req, res) => {
@@ -168,7 +142,7 @@ app.post("/api/ask", requireAuth, async (req, res) => {
 });
 
 app.post("/api/automation/decide", requireAuth, async (req, res) => {
-  let reservedCredit = false;
+  let reservation = null;
   try {
     const goal = String(req.body?.goal || "").trim();
     if (!goal) return res.status(400).json({ error: "Automation goal required", code: "GOAL_REQUIRED" });
@@ -176,21 +150,20 @@ app.post("/api/automation/decide", requireAuth, async (req, res) => {
     const minEpoch = req.body?.minFrameEpoch == null ? null : String(req.body.minFrameEpoch);
     if (!requireFreshFrame(res, req.authUser.id, minSequence, minEpoch)) return;
     if (!getProviderStatus().configured) return res.status(503).json({ error: "No AI provider is configured on the server. Add GEMINI_API_KEY, OPENAI_API_KEY, or OPENROUTER_API_KEY in Render.", code: "AI_NOT_CONFIGURED", freeOnly: true });
-    const usage = await consumeCredit(req.authUser.id);
-    if (!usage.allowed) return res.status(429).json({ error: "Your free GameVision allowance has been used. It will reset automatically.", code: "FREE_ALLOWANCE_EXHAUSTED", resetAt: usage.user.resetAt, creditsRemaining: 0 });
-    reservedCredit = true;
+    reservation = await reserveAutomationCredit(req.authUser.id, req.body?.aiSessionId || null);
+    if (!reservation.allowed) return res.status(429).json({ error: "Your free GameVision allowance has been used. It will reset automatically.", code: "FREE_ALLOWANCE_EXHAUSTED", resetAt: reservation.user.resetAt, creditsRemaining: 0 });
     const history = normalizeHistory(req.body?.messages);
     const frame = frameStore.get(req.authUser.id);
     try {
       const { result: raw, provider } = await decideWithProviders(frame.images, goal, history);
-      return res.json({ action: normalizeAction(raw), provider, providers: getProviderStatus(), frame: frameStatus(req.authUser.id), freeOnly: true, usage: { creditsRemaining: usage.user.creditsRemaining } });
+      return res.json({ action: normalizeAction(raw), provider, providers: getProviderStatus(), aiSessionId: reservation.sessionId, creditReused: reservation.reused, frame: frameStatus(req.authUser.id), freeOnly: true, usage: { creditsRemaining: reservation.user.creditsRemaining } });
     } catch (error) {
-      const refunded = await refundCredit(req.authUser.id); reservedCredit = false;
-      return providerFailure(res, error, "FREE_AI_UPSTREAM_ERROR", { usage: { creditsRemaining: refunded?.creditsRemaining ?? usage.user.creditsRemaining } });
+      if (!reservation.reused) { const refunded = await refundCredit(req.authUser.id); reservation = null; return providerFailure(res, error, "FREE_AI_UPSTREAM_ERROR", { usage: { creditsRemaining: refunded?.creditsRemaining ?? 0 } }); }
+      return providerFailure(res, error, "FREE_AI_UPSTREAM_ERROR", { usage: { creditsRemaining: reservation.user.creditsRemaining } });
     }
   } catch (error) {
     console.error("GameVision automation error:", error?.message || error);
-    if (reservedCredit) { try { await refundCredit(req.authUser.id); } catch (refundError) { console.error("Unable to refund failed automation credit:", refundError?.message || refundError); } }
+    if (reservation && !reservation.reused) { try { await refundCredit(req.authUser.id); } catch (refundError) { console.error("Unable to refund failed automation reservation:", refundError?.message || refundError); } }
     return res.status(502).json({ error: "Unable to plan the next action right now. Please retry.", code: "AUTOMATION_FAILED", retryable: true, freeOnly: true });
   }
 });
