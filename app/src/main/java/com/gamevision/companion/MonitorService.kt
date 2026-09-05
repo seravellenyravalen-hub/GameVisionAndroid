@@ -44,7 +44,13 @@ class MonitorService : Service() {
         private const val CHANNEL = "gamevision_monitor"
         private const val NOTIFICATION_ID = 77
         @Volatile private var active = false
+        @Volatile private var latestJpeg: ByteArray? = null
+        @Volatile private var latestSequence = 0L
+        @Volatile private var latestCapturedAt = 0L
         fun isRunning(): Boolean = active
+        fun latestFrameJpeg(): ByteArray? = latestJpeg?.copyOf()
+        fun latestFrameSequence(): Long = latestSequence
+        fun latestFrameAgeMs(now: Long = System.currentTimeMillis()): Long = if (latestCapturedAt <= 0L) -1L else (now - latestCapturedAt).coerceAtLeast(0L)
     }
 
     private val executor = Executors.newSingleThreadExecutor()
@@ -104,8 +110,15 @@ class MonitorService : Service() {
         if (snapshot == null) { uploadBusy.set(false); return }
         lastUploadAt = System.currentTimeMillis()
         executor.execute {
-            try { uploadFrame(bitmapToFrameSet(snapshot)) }
-            catch (e: Exception) { updateHud("OFFLINE", "${e.javaClass.simpleName}: ${e.message ?: "connection failed"}") }
+            try {
+                val frameSet = bitmapToFrameSet(snapshot)
+                frameSet.firstOrNull()?.let { full ->
+                    latestJpeg = full.data.copyOf()
+                    latestCapturedAt = System.currentTimeMillis()
+                    latestSequence += 1L
+                }
+                uploadFrame(frameSet)
+            } catch (e: Exception) { updateHud("OFFLINE", "${e.javaClass.simpleName}: ${e.message ?: "connection failed"}") }
             finally { snapshot.recycle(); uploadBusy.set(false) }
         }
     }
@@ -156,7 +169,7 @@ class MonitorService : Service() {
         val connection = URL("$serverUrl/api/frame").openConnection() as HttpURLConnection
         try {
             connection.requestMethod = "POST"; connection.connectTimeout = 8000; connection.readTimeout = 8000; connection.doOutput = true
-            connection.setRequestProperty("Content-Type", "application/json"); connection.setRequestProperty("Accept", "application/json"); connection.setRequestProperty("User-Agent", "GameVision-Companion/3.2")
+            connection.setRequestProperty("Content-Type", "application/json"); connection.setRequestProperty("Accept", "application/json"); connection.setRequestProperty("User-Agent", "GameVision-Companion/3.3")
             val token = AuthStore.token(this).orEmpty()
             if (token.isNotBlank()) connection.setRequestProperty("Authorization", "Bearer $token")
             val jsonImages = images.joinToString(",") { item ->
@@ -186,7 +199,7 @@ class MonitorService : Service() {
 
     private fun updateHud(title: String, detail: String) { mainHandler.post { overlay?.let { panel -> (panel.getChildAt(1) as? TextView)?.apply { text = "$title\n$detail"; setTextColor(if (title == "OFFLINE") 0xFFFF5D67.toInt() else 0xFFF4F7FA.toInt()) } } } }
     private fun toggleHud() { mainHandler.post { if (overlay == null) showHud() else { runCatching { wm?.removeView(overlay) }; overlay = null } } }
-    private fun stopProjection() { running.set(false); active = false; uploadBusy.set(false); runCatching { virtualDisplay?.release() }; virtualDisplay = null; runCatching { reader?.close() }; reader = null; runCatching { projection?.unregisterCallback(projectionCallback) }; projection = null; stopForeground(STOP_FOREGROUND_REMOVE); stopSelf() }
+    private fun stopProjection() { running.set(false); active = false; uploadBusy.set(false); latestJpeg = null; latestSequence = 0L; latestCapturedAt = 0L; runCatching { virtualDisplay?.release() }; virtualDisplay = null; runCatching { reader?.close() }; reader = null; runCatching { projection?.unregisterCallback(projectionCallback) }; projection = null; stopForeground(STOP_FOREGROUND_REMOVE); stopSelf() }
     override fun onDestroy() { stopProjection(); executor.shutdownNow(); super.onDestroy() }
     override fun onBind(intent: Intent?): IBinder? = null
     private fun createChannel() { if (Build.VERSION.SDK_INT >= 26) getSystemService(NotificationManager::class.java)?.createNotificationChannel(NotificationChannel(CHANNEL, "GameVision Monitor", NotificationManager.IMPORTANCE_LOW)) }
