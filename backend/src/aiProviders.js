@@ -1,36 +1,65 @@
 import { buildAssistantPrompt, buildAutomationPrompt } from "./assistant.js";
 
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY?.trim() || "";
-const OPENROUTER_MODEL = "openrouter/free";
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY?.trim() || "";
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY?.trim() || "";
+const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL?.trim() || "openrouter/free";
+const GEMINI_MODEL = process.env.GEMINI_MODEL?.trim() || "gemini-2.5-flash-lite";
+const OPENAI_MODEL = process.env.OPENAI_MODEL?.trim() || "gpt-5.6-luna";
 const FREE_MODELS = [
   "openrouter/free",
   "google/gemma-4-31b-it:free",
   "google/gemma-4-26b-a4b-it:free",
   "minimax/minimax-m3:free"
 ];
+const PROVIDER_NAMES = ["gemini", "openai", "openrouter"];
+const PROVIDER_ORDER = String(process.env.AI_PROVIDER_ORDER || "gemini,openai,openrouter")
+  .split(",").map((value) => value.trim().toLowerCase()).filter((value, index, list) => PROVIDER_NAMES.includes(value) && list.indexOf(value) === index);
 let rotationIndex = 0;
+const providerCooldownUntil = new Map();
+let lastProvider = null;
+
+export function isUsableApiKey(value) {
+  const key = String(value || "").trim();
+  if (!key || /\$\{[^}]+\}/.test(key) || /^\$[A-Z0-9_]+$/.test(key)) return false;
+  if (/^(replace|your|put|set|insert)[ _-]*(with|the)?/i.test(key)) return false;
+  return true;
+}
 
 export function isUsableOpenRouterKey(value) {
   const key = String(value || "").trim();
-  if (!key) return false;
-  if (/\$\{[^}]+\}/.test(key) || /^\$[A-Z0-9_]+$/.test(key)) return false;
-  if (/^(replace|your|put|set|insert)[ _-]*(with|the)?/i.test(key)) return false;
+  if (!isUsableApiKey(key)) return false;
   if (/OPENROUTER_API_KEY/i.test(key) && key.length < 60) return false;
   return true;
 }
 
+const configured = {
+  gemini: isUsableApiKey(GEMINI_API_KEY),
+  openai: isUsableApiKey(OPENAI_API_KEY),
+  openrouter: isUsableOpenRouterKey(OPENROUTER_API_KEY)
+};
+
 export const providerStatus = {
-  openrouterConfigured: isUsableOpenRouterKey(OPENROUTER_API_KEY),
+  geminiConfigured: configured.gemini,
+  openaiConfigured: configured.openai,
+  openrouterConfigured: configured.openrouter,
+  geminiModel: GEMINI_MODEL,
+  openaiModel: OPENAI_MODEL,
   openrouterModel: OPENROUTER_MODEL,
-  openrouterFreeOnly: true
+  openrouterFreeOnly: true,
+  providers: PROVIDER_NAMES.filter((name) => configured[name]),
+  lastProvider: null
 };
 
 console.log("GameVision AI configuration:", {
-  openrouterConfigured: providerStatus.openrouterConfigured,
-  openrouterKeyLength: OPENROUTER_API_KEY.length,
+  providers: providerStatus.providers,
+  geminiConfigured: configured.gemini,
+  openaiConfigured: configured.openai,
+  openrouterConfigured: configured.openrouter,
+  geminiModel: GEMINI_MODEL,
+  openaiModel: OPENAI_MODEL,
   openrouterModel: OPENROUTER_MODEL,
-  openrouterFreeOnly: true,
-  freeModels: FREE_MODELS
+  openrouterFreeOnly: true
 });
 
 export const screenSchema = {
@@ -74,21 +103,23 @@ function parseJsonText(text, provider) {
   }
 }
 
-function imagesToOpenRouterContent(images) {
-  return (Array.isArray(images) ? images : []).map((image) => ({ type: "image_url", image_url: { url: `data:${image.mimeType};base64,${image.data}` } }));
-}
-
-function nextFreeModels() {
-  const start = rotationIndex++ % FREE_MODELS.length;
-  return [...FREE_MODELS.slice(start), ...FREE_MODELS.slice(0, start)];
-}
-
 function providerError(code, status, detail, retryable = false) {
   const error = new Error(String(detail).replace(/[\r\n]+/g, " ").slice(0, 240));
   error.code = code;
   error.status = status;
   error.retryable = retryable;
   return error;
+}
+
+function classifyProviderFailure(provider, status, detail = "") {
+  const text = String(detail || "");
+  if (status === 401 || status === 403 || /invalid.*key|authentication|unauthorized/i.test(text)) return { code: `${provider.toUpperCase()}_AUTH_FAILED`, retryable: false, detail: `${provider} rejected its server key. Check the ${provider === "gemini" ? "GEMINI_API_KEY" : provider === "openai" ? "OPENAI_API_KEY" : "OPENROUTER_API_KEY"} in Render.` };
+  if (status === 402 || /insufficient.*credit|payment required|billing/i.test(text)) return { code: `${provider.toUpperCase()}_CREDITS_REQUIRED`, retryable: false, detail: `${provider} reported that this key/model has no usable upstream quota.` };
+  if (status === 400) return { code: `${provider.toUpperCase()}_BAD_REQUEST`, retryable: false, detail: `${provider} rejected the request format.` };
+  if (status === 408 || /timeout|timed out/i.test(text)) return { code: `${provider.toUpperCase()}_TIMEOUT`, retryable: true, detail: `${provider} did not respond before the timeout.` };
+  if (status === 429 || /rate.?limit|quota|resource exhausted/i.test(text)) return { code: `${provider.toUpperCase()}_RATE_LIMITED`, retryable: true, detail: `${provider} is temporarily rate-limited.` };
+  if (status >= 500) return { code: `${provider.toUpperCase()}_UPSTREAM_ERROR`, retryable: true, detail: `${provider} upstream returned HTTP ${status}.` };
+  return { code: `${provider.toUpperCase()}_UPSTREAM_ERROR`, retryable: true, detail: `${provider} request failed with HTTP ${status}.` };
 }
 
 export function classifyOpenRouterFailure(status, detail = "") {
@@ -100,6 +131,46 @@ export function classifyOpenRouterFailure(status, detail = "") {
   if (status === 429 || /rate.?limit|quota/i.test(text)) return { code: "FREE_AI_RATE_LIMITED", retryable: true, detail: "The free OpenRouter route is temporarily rate-limited." };
   if (status >= 500) return { code: "FREE_AI_UPSTREAM_ERROR", retryable: true, detail: `OpenRouter upstream returned HTTP ${status}.` };
   return { code: "FREE_AI_UPSTREAM_ERROR", retryable: true, detail: `OpenRouter request failed with HTTP ${status}.` };
+}
+
+export function buildProviderOrder(providers, startIndex = 0) {
+  const list = Array.isArray(providers) ? providers.filter((name) => PROVIDER_NAMES.includes(name)) : [];
+  if (!list.length) return [];
+  const start = ((Number(startIndex) || 0) % list.length + list.length) % list.length;
+  return [...list.slice(start), ...list.slice(0, start)];
+}
+
+function configuredProviderOrder() {
+  const base = PROVIDER_ORDER.length ? PROVIDER_ORDER : PROVIDER_NAMES;
+  const available = base.filter((name) => configured[name]);
+  return buildProviderOrder(available, rotationIndex++);
+}
+
+function markProviderSuccess(provider) {
+  lastProvider = provider;
+  providerStatus.lastProvider = provider;
+  providerCooldownUntil.delete(provider);
+}
+
+function markProviderFailure(provider, error) {
+  if (error?.retryable) providerCooldownUntil.set(provider, Date.now() + Math.min(30000, provider === "openrouter" ? 5000 : 8000));
+}
+
+function imagesToOpenRouterContent(images) {
+  return (Array.isArray(images) ? images : []).map((image) => ({ type: "image_url", image_url: { url: `data:${image.mimeType};base64,${image.data}` } }));
+}
+
+function imagesToGeminiParts(images) {
+  return (Array.isArray(images) ? images : []).map((image) => ({ inline_data: { mime_type: image.mimeType, data: image.data } }));
+}
+
+function imagesToOpenAIContent(images) {
+  return (Array.isArray(images) ? images : []).map((image) => ({ type: "input_image", image_url: `data:${image.mimeType};base64,${image.data}`, detail: "low" }));
+}
+
+function nextFreeModels() {
+  const start = rotationIndex++ % FREE_MODELS.length;
+  return [...FREE_MODELS.slice(start), ...FREE_MODELS.slice(0, start)];
 }
 
 async function requestOpenRouter(prompt, images, maxTokens, model) {
@@ -116,26 +187,84 @@ async function requestOpenRouter(prompt, images, maxTokens, model) {
   }
   const detail = await response.text();
   const classified = classifyOpenRouterFailure(response.status, detail);
-  console.error("OpenRouter free request failed", response.status, classified.code, classified.detail);
   throw providerError(classified.code, response.status, classified.detail, classified.retryable);
 }
 
-async function postOpenRouter(prompt, images, maxTokens = 650) {
-  if (!providerStatus.openrouterConfigured) throw providerError("AI_NOT_CONFIGURED", 503, "OpenRouter is not configured on the server.", false);
-  const attempts = [OPENROUTER_MODEL, ...nextFreeModels().filter((model) => model !== OPENROUTER_MODEL)];
-  let lastError = null;
-  for (const model of attempts) {
-    try { return await requestOpenRouter(prompt, images, maxTokens, model); }
-    catch (error) {
-      lastError = error;
-      if (!error?.retryable && error?.code !== "OPENROUTER_BAD_REQUEST") break;
-      if (error?.code === "OPENROUTER_BAD_REQUEST") continue;
-      await new Promise((resolve) => setTimeout(resolve, 350));
-    }
+async function requestGemini(prompt, images, maxTokens) {
+  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(GEMINI_MODEL)}:generateContent`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-goog-api-key": GEMINI_API_KEY },
+    signal: AbortSignal.timeout(12000),
+    body: JSON.stringify({
+      contents: [{ role: "user", parts: [{ text: prompt }, ...imagesToGeminiParts(images)] }],
+      generationConfig: { temperature: 0.1, maxOutputTokens: maxTokens, responseMimeType: "application/json" }
+    })
+  });
+  if (response.ok) {
+    const data = await response.json();
+    const text = data?.candidates?.[0]?.content?.parts?.map((part) => part?.text || "").join("");
+    return parseJsonText(text, "Gemini");
   }
-  throw lastError || providerError("FREE_AI_UPSTREAM_ERROR", 502, "OpenRouter free request failed.", true);
+  const detail = await response.text();
+  const classified = classifyProviderFailure("gemini", response.status, detail);
+  throw providerError(classified.code, response.status, classified.detail, classified.retryable);
 }
 
-export async function analyzeWithOpenRouter(images) { return postOpenRouter(analysisPrompt, images, 650); }
-export async function askWithOpenRouter(images, instruction, history = [], visionFresh = true) { return postOpenRouter(`${buildAssistantPrompt(instruction, history, Array.isArray(images) && images.length > 0, visionFresh)}\n\nReturn ONLY valid JSON with keys answer and confidence.`, images, 650); }
-export async function decideWithOpenRouter(images, goal, history = []) { return postOpenRouter(`${buildAutomationPrompt(goal, history)}\n\nReturn ONLY valid JSON with keys type, x, y, x2, y2, text, durationMs, waitMs, reason, confidence, verify, and stopReason.`, images, 500); }
+async function requestOpenAI(prompt, images, maxTokens) {
+  const content = [{ type: "input_text", text: prompt }, ...imagesToOpenAIContent(images)];
+  const response = await fetch("https://api.openai.com/v1/responses", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${OPENAI_API_KEY}` },
+    signal: AbortSignal.timeout(15000),
+    body: JSON.stringify({ model: OPENAI_MODEL, input: [{ role: "user", content }], max_output_tokens: maxTokens })
+  });
+  if (response.ok) {
+    const data = await response.json();
+    const text = data?.output_text || data?.output?.flatMap((item) => item?.content || []).map((part) => part?.text || "").join("");
+    return parseJsonText(text, "OpenAI");
+  }
+  const detail = await response.text();
+  const classified = classifyProviderFailure("openai", response.status, detail);
+  throw providerError(classified.code, response.status, classified.detail, classified.retryable);
+}
+
+async function callProvider(provider, prompt, images, maxTokens) {
+  if (provider === "gemini") return requestGemini(prompt, images, maxTokens);
+  if (provider === "openai") return requestOpenAI(prompt, images, maxTokens);
+  return requestOpenRouter(prompt, images, maxTokens, OPENROUTER_MODEL);
+}
+
+async function postWithProviderPool(prompt, images, maxTokens = 650) {
+  const order = configuredProviderOrder().filter((provider) => Date.now() >= (providerCooldownUntil.get(provider) || 0));
+  if (!order.length) throw providerError("AI_NOT_CONFIGURED", 503, "No configured AI provider is currently available.", true);
+  let lastError = null;
+  for (const provider of order) {
+    try {
+      const result = await callProvider(provider, prompt, images, maxTokens);
+      markProviderSuccess(provider);
+      return { result, provider };
+    } catch (error) {
+      lastError = error;
+      markProviderFailure(provider, error);
+    }
+  }
+  throw lastError || providerError("FREE_AI_UPSTREAM_ERROR", 502, "All configured AI providers failed.", true);
+}
+
+export function getProviderStatus() {
+  return {
+    providers: providerStatus.providers,
+    configured: providerStatus.providers.length > 0,
+    available: providerStatus.providers.filter((name) => Date.now() >= (providerCooldownUntil.get(name) || 0)),
+    lastProvider,
+    models: { gemini: GEMINI_MODEL, openai: OPENAI_MODEL, openrouter: OPENROUTER_MODEL }
+  };
+}
+
+export async function analyzeWithProviders(images) { return postWithProviderPool(analysisPrompt, images, 650); }
+export async function askWithProviders(images, instruction, history = [], visionFresh = true) { return postWithProviderPool(`${buildAssistantPrompt(instruction, history, Array.isArray(images) && images.length > 0, visionFresh)}\n\nReturn ONLY valid JSON with keys answer and confidence.`, images, 650); }
+export async function decideWithProviders(images, goal, history = []) { return postWithProviderPool(`${buildAutomationPrompt(goal, history)}\n\nReturn ONLY valid JSON with keys type, x, y, x2, y2, text, durationMs, waitMs, reason, confidence, verify, and stopReason.`, images, 500); }
+
+export async function analyzeWithOpenRouter(images) { return (await postWithProviderPool(analysisPrompt, images, 650)).result; }
+export async function askWithOpenRouter(images, instruction, history = [], visionFresh = true) { return (await postWithProviderPool(`${buildAssistantPrompt(instruction, history, Array.isArray(images) && images.length > 0, visionFresh)}\n\nReturn ONLY valid JSON with keys answer and confidence.`, images, 650)).result; }
+export async function decideWithOpenRouter(images, goal, history = []) { return (await postWithProviderPool(`${buildAutomationPrompt(goal, history)}\n\nReturn ONLY valid JSON with keys type, x, y, x2, y2, text, durationMs, waitMs, reason, confidence, verify, and stopReason.`, images, 500)).result; }
