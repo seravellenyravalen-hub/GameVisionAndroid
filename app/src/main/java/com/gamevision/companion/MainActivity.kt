@@ -105,9 +105,13 @@ class MainActivity : Activity() {
 
     private fun bindNav(navId: Int, pageId: Int) {
         findViewById<LinearLayout>(navId).apply {
+            isEnabled = true
             isClickable = true
             isFocusable = true
+            elevation = dp(24).toFloat()
+            translationZ = dp(24).toFloat()
             setOnClickListener { showPage(pageId) }
+            post { bringToFront() }
         }
     }
 
@@ -136,7 +140,7 @@ class MainActivity : Activity() {
     private fun openOverlaySettings() { if (Settings.canDrawOverlays(this)) { status.text = "Display over other apps is enabled."; updatePermissionSummary(); return }; status.text = "Opening Android overlay access…"; runCatching { startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION).apply { data = Uri.parse("package:$packageName") }) }.onFailure { status.text = "Open Android Settings → Special app access → Display over other apps → GameVision." } }
     private fun openAccessibilitySettings() { status.text = if (GameVisionAccessibilityService.isEnabled()) "GameVision Auto Control is enabled." else "Opening Android Accessibility settings…"; if (!GameVisionAccessibilityService.isEnabled()) runCatching { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) } }
 
-    override fun onResume() { super.onResume(); if (::startButton.isInitialized) { updateMonitorUi(MonitorService.isRunning()); updatePermissionSummary(); checkAiConfiguration() } }
+    override fun onResume() { super.onResume(); if (::startButton.isInitialized) { updateMonitorUi(MonitorService.isRunning()); updatePermissionSummary(); checkAiConfiguration(); bindNavigation() } }
     private fun updatePermissionSummary() { if (!::permissionSummary.isInitialized) return; val overlay = if (Settings.canDrawOverlays(this)) "Overlay ready" else "Overlay needs permission"; val auto = if (GameVisionAccessibilityService.isEnabled()) "Auto Control ready" else "Auto Control needs permission"; permissionSummary.text = "$overlay  •  $auto" }
     private fun updateMonitorUi(active: Boolean) { startButton.isEnabled = !active; stopButton.isEnabled = active; startButton.alpha = if (active) 0.45f else 1f; stopButton.alpha = if (active) 1f else 0.45f; monitorState.text = if (active) "LIVE" else "STOPPED"; monitorState.setTextColor(if (active) getColor(R.color.gv_lime) else getColor(R.color.gv_text)); monitorDetail.text = if (active) "Screen capture is running and the G/V assistant can use fresh frames." else "Waiting for screen sharing approval."; homeMonitorState.text = if (active) "Monitoring live • screen vision active" else "Not monitoring"; headerStatus.text = if (active) "LIVE" else "READY"; headerStatus.setTextColor(getColor(R.color.gv_bg)) }
 
