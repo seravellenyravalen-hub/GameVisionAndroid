@@ -1,1 +1,1 @@
-This file triggers the command-engine repair workflow. It can be removed after the repair run.
+Live vision diagnostics build trigger: 2026-09-05T10:00Z
