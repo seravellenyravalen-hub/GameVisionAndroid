@@ -30,6 +30,7 @@ import android.widget.TextView
 import java.io.ByteArrayOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
+import java.security.MessageDigest
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.roundToInt
@@ -47,10 +48,12 @@ class MonitorService : Service() {
         @Volatile private var latestJpeg: ByteArray? = null
         @Volatile private var latestSequence = 0L
         @Volatile private var latestCapturedAt = 0L
+        @Volatile private var latestSourceChanged = false
         fun isRunning(): Boolean = active
         fun latestFrameJpeg(): ByteArray? = latestJpeg?.copyOf()
         fun latestFrameSequence(): Long = latestSequence
         fun latestFrameAgeMs(now: Long = System.currentTimeMillis()): Long = if (latestCapturedAt <= 0L) -1L else (now - latestCapturedAt).coerceAtLeast(0L)
+        fun latestFrameChanged(): Boolean = latestSourceChanged
     }
 
     private val executor = Executors.newSingleThreadExecutor()
@@ -61,9 +64,9 @@ class MonitorService : Service() {
     private var virtualDisplay: VirtualDisplay? = null
     private var reader: ImageReader? = null
     private var serverUrl = "https://gamevision-api.onrender.com"
-    private var lastUploadAt = 0L
     private var overlay: LinearLayout? = null
     private var wm: WindowManager? = null
+    private val livePolicy = LiveVisionPolicy()
 
     private val projectionCallback = object : MediaProjection.Callback() { override fun onStop() { stopProjection() } }
 
@@ -82,8 +85,8 @@ class MonitorService : Service() {
         serverUrl = intent.getStringExtra(EXTRA_SERVER_URL)?.trim()?.removeSuffix("/")?.takeIf { it.isNotBlank() } ?: serverUrl
         val resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, Activity.RESULT_CANCELED)
         val data = intent.getParcelableExtraCompat<Intent>(EXTRA_RESULT_DATA) ?: return
-        if (Build.VERSION.SDK_INT >= 29) startForeground(NOTIFICATION_ID, notification("Monitoring the visible screen"), ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
-        else startForeground(NOTIFICATION_ID, notification("Monitoring the visible screen"))
+        if (Build.VERSION.SDK_INT >= 29) startForeground(NOTIFICATION_ID, notification("Live screen vision is active"), ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
+        else startForeground(NOTIFICATION_ID, notification("Live screen vision is active"))
 
         val manager = getSystemService(MediaProjectionManager::class.java)
         projection = manager.getMediaProjection(resultCode, data)
@@ -93,33 +96,43 @@ class MonitorService : Service() {
         val height = metrics.heightPixels
         reader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 3)
         reader?.setOnImageAvailableListener({ onFrame(it) }, mainHandler)
-        virtualDisplay = projection?.createVirtualDisplay("GameVisionMonitor", width, height, metrics.densityDpi, DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, reader?.surface, null, null)
+        virtualDisplay = projection?.createVirtualDisplay("GameVisionLiveVision", width, height, metrics.densityDpi, DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, reader?.surface, null, null)
         running.set(true)
         active = true
         if (Settings.canDrawOverlays(this)) showHud()
+        updateHud("LIVE", "Continuous screen vision • 12 FPS local buffer")
     }
 
     private fun onFrame(imageReader: ImageReader) {
-        if (!running.get()) return
+        if (!running.get() || MainActivity.isForeground) return
         val image = runCatching { imageReader.acquireLatestImage() }.getOrNull() ?: return
-        if (System.currentTimeMillis() - lastUploadAt < 900L || !uploadBusy.compareAndSet(false, true)) {
+        val now = System.currentTimeMillis()
+        if (!livePolicy.shouldCapture(now)) {
             runCatching { image.close() }
             return
         }
+        livePolicy.markCaptured(now)
         val snapshot = try { imageToBitmap(image) } catch (_: Exception) { null } finally { runCatching { image.close() } }
-        if (snapshot == null) { uploadBusy.set(false); return }
-        lastUploadAt = System.currentTimeMillis()
+        if (snapshot == null) return
         executor.execute {
             try {
                 val frameSet = bitmapToFrameSet(snapshot)
-                frameSet.firstOrNull()?.let { full ->
-                    latestJpeg = full.data.copyOf()
+                val full = frameSet.firstOrNull()
+                if (full != null) {
+                    val jpeg = full.data.copyOf()
+                    val fingerprint = fingerprint(jpeg)
+                    val previous = latestJpeg
+                    latestSourceChanged = previous == null || fingerprint(previous) != fingerprint
+                    latestJpeg = jpeg
                     latestCapturedAt = System.currentTimeMillis()
                     latestSequence += 1L
+                    if (livePolicy.shouldUpload(fingerprint, latestCapturedAt) && uploadBusy.compareAndSet(false, true)) {
+                        uploadFrameAsync(frameSet)
+                    }
                 }
-                uploadFrame(frameSet)
-            } catch (e: Exception) { updateHud("OFFLINE", "${e.javaClass.simpleName}: ${e.message ?: "connection failed"}") }
-            finally { snapshot.recycle(); uploadBusy.set(false) }
+            } catch (e: Exception) {
+                updateHud("OFFLINE", "${e.javaClass.simpleName}: ${e.message ?: "vision pipeline failed"}")
+            } finally { snapshot.recycle() }
         }
     }
 
@@ -164,12 +177,21 @@ class MonitorService : Service() {
     }
 
     private fun jpeg(bitmap: Bitmap, quality: Int): ByteArray = ByteArrayOutputStream().use { out -> bitmap.compress(Bitmap.CompressFormat.JPEG, quality, out); out.toByteArray() }
+    private fun fingerprint(data: ByteArray): String = MessageDigest.getInstance("SHA-256").digest(data).take(8).joinToString("") { "%02x".format(it) }
+
+    private fun uploadFrameAsync(images: List<EncodedImage>) {
+        executor.execute {
+            try { uploadFrame(images) }
+            catch (e: Exception) { updateHud("OFFLINE", "${e.javaClass.simpleName}: ${e.message ?: "upload failed"}") }
+            finally { uploadBusy.set(false) }
+        }
+    }
 
     private fun uploadFrame(images: List<EncodedImage>) {
         val connection = URL("$serverUrl/api/frame").openConnection() as HttpURLConnection
         try {
-            connection.requestMethod = "POST"; connection.connectTimeout = 8000; connection.readTimeout = 8000; connection.doOutput = true
-            connection.setRequestProperty("Content-Type", "application/json"); connection.setRequestProperty("Accept", "application/json"); connection.setRequestProperty("User-Agent", "GameVision-Companion/3.3")
+            connection.requestMethod = "POST"; connection.connectTimeout = 2500; connection.readTimeout = 2500; connection.doOutput = true
+            connection.setRequestProperty("Content-Type", "application/json"); connection.setRequestProperty("Accept", "application/json"); connection.setRequestProperty("User-Agent", "GameVision-Companion/4.0-LiveVision")
             val token = AuthStore.token(this).orEmpty()
             if (token.isNotBlank()) connection.setRequestProperty("Authorization", "Bearer $token")
             val jsonImages = images.joinToString(",") { item ->
@@ -182,7 +204,7 @@ class MonitorService : Service() {
             if (code !in 200..299) throw IllegalStateException("HTTP $code ${body.take(120)}")
             val frame = org.json.JSONObject(body).optJSONObject("frame")
             val sequence = frame?.optLong("sequence", 0L) ?: 0L
-            updateHud("LIVE", if (sequence > 0) "Screen frame #$sequence • vision ready" else "Screen captured • vision ready")
+            updateHud("LIVE", if (sequence > 0) "Vision stream • server frame #$sequence" else "Vision stream • frame uploaded")
         } finally { connection.disconnect() }
     }
 
@@ -190,16 +212,16 @@ class MonitorService : Service() {
         if (overlay != null || !Settings.canDrawOverlays(this)) return
         wm = getSystemService(WINDOW_SERVICE) as WindowManager
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(12), dp(10), dp(12), dp(10)); background = rounded(0xF010141B.toInt(), 20); elevation = dp(8).toFloat() }
-        val header = TextView(this).apply { text = "G/V  GAMEVISION     ● LIVE AI"; textSize = 11f; setTextColor(0xFFB8FF3D.toInt()); typeface = android.graphics.Typeface.DEFAULT_BOLD }
-        val status = TextView(this).apply { text = "WAITING FOR SCREEN"; textSize = 12f; setTextColor(Color.WHITE); setPadding(0, dp(8), 0, 0) }
+        val header = TextView(this).apply { text = "G/V  GAMEVISION     ● LIVE VISION"; textSize = 11f; setTextColor(0xFFB8FF3D.toInt()); typeface = android.graphics.Typeface.DEFAULT_BOLD }
+        val status = TextView(this).apply { text = "WAITING FOR LIVE FRAME"; textSize = 12f; setTextColor(Color.WHITE); setPadding(0, dp(8), 0, 0) }
         root.addView(header); root.addView(status)
-        val params = WindowManager.LayoutParams(dp(300), WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY, WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE, PixelFormat.TRANSLUCENT).apply { gravity = Gravity.TOP or Gravity.END; x = dp(12); y = dp(86) }
+        val params = WindowManager.LayoutParams(dp(300), WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY, WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or WindowManager.LayoutParams.FLAG_SECURE, PixelFormat.TRANSLUCENT).apply { gravity = Gravity.TOP or Gravity.END; x = dp(12); y = dp(86) }
         runCatching { wm?.addView(root, params); overlay = root }
     }
 
     private fun updateHud(title: String, detail: String) { mainHandler.post { overlay?.let { panel -> (panel.getChildAt(1) as? TextView)?.apply { text = "$title\n$detail"; setTextColor(if (title == "OFFLINE") 0xFFFF5D67.toInt() else 0xFFF4F7FA.toInt()) } } } }
     private fun toggleHud() { mainHandler.post { if (overlay == null) showHud() else { runCatching { wm?.removeView(overlay) }; overlay = null } } }
-    private fun stopProjection() { running.set(false); active = false; uploadBusy.set(false); latestJpeg = null; latestSequence = 0L; latestCapturedAt = 0L; runCatching { virtualDisplay?.release() }; virtualDisplay = null; runCatching { reader?.close() }; reader = null; runCatching { projection?.unregisterCallback(projectionCallback) }; projection = null; stopForeground(STOP_FOREGROUND_REMOVE); stopSelf() }
+    private fun stopProjection() { running.set(false); active = false; uploadBusy.set(false); latestJpeg = null; latestSequence = 0L; latestCapturedAt = 0L; latestSourceChanged = false; runCatching { virtualDisplay?.release() }; virtualDisplay = null; runCatching { reader?.close() }; reader = null; runCatching { projection?.unregisterCallback(projectionCallback) }; projection = null; stopForeground(STOP_FOREGROUND_REMOVE); stopSelf() }
     override fun onDestroy() { stopProjection(); executor.shutdownNow(); super.onDestroy() }
     override fun onBind(intent: Intent?): IBinder? = null
     private fun createChannel() { if (Build.VERSION.SDK_INT >= 26) getSystemService(NotificationManager::class.java)?.createNotificationChannel(NotificationChannel(CHANNEL, "GameVision Monitor", NotificationManager.IMPORTANCE_LOW)) }
