@@ -74,9 +74,23 @@ class AssistantOverlayService : Service(), TextToSpeech.OnInitListener {
 
     override fun onCreate() { super.onCreate(); createChannel(); tts = TextToSpeech(this, this); automation = AutomationController() }
 
+    private fun foregroundTypes(withMicrophone: Boolean): Int {
+        if (Build.VERSION.SDK_INT < 29) return 0
+        var types = ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+        if (withMicrophone && Build.VERSION.SDK_INT >= 34) types = types or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+        return types
+    }
+
+    private fun ensureForeground(withMicrophone: Boolean) {
+        if (Build.VERSION.SDK_INT >= 29) {
+            runCatching { startForeground(NOTIFICATION_ID, notification(), foregroundTypes(withMicrophone)) }
+                .onFailure { if (withMicrophone) handler.post { statusView?.text = "VOICE • ANDROID BLOCKED MICROPHONE" } }
+        } else startForeground(NOTIFICATION_ID, notification())
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            ACTION_START -> { serverUrl = intent.getStringExtra(EXTRA_SERVER_URL)?.trim()?.removeSuffix("/") ?: serverUrl; if (Build.VERSION.SDK_INT >= 29) startForeground(NOTIFICATION_ID, notification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE) else startForeground(NOTIFICATION_ID, notification()); showBubble() }
+            ACTION_START -> { serverUrl = intent.getStringExtra(EXTRA_SERVER_URL)?.trim()?.removeSuffix("/") ?: serverUrl; ensureForeground(liveVoiceActive); showBubble() }
             ACTION_STOP -> { liveVoiceActive = false; speechRecognizer?.cancel(); automation?.stop("service stopped"); stopSelf() }
         }
         return START_NOT_STICKY
@@ -86,26 +100,30 @@ class AssistantOverlayService : Service(), TextToSpeech.OnInitListener {
         if (bubble != null) return
         wm = getSystemService(WINDOW_SERVICE) as WindowManager
         val b = TextView(this).apply { text = "G/V"; textSize = 12f; gravity = Gravity.CENTER; setTextColor(Color.BLACK); typeface = android.graphics.Typeface.DEFAULT_BOLD; background = rounded(0xFFB8FF3D.toInt(), 50); elevation = 12f; setOnClickListener { togglePanel() }; setOnTouchListener(DragTouchListener { bubbleParams }) }
-        val params = WindowManager.LayoutParams(dp(54), dp(54), WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY, WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE, PixelFormat.TRANSLUCENT).apply { gravity = Gravity.TOP or Gravity.START; x = dp(18); y = dp(180) }
+        val params = WindowManager.LayoutParams(dp(54), dp(54), WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY, WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_SECURE, PixelFormat.TRANSLUCENT).apply { gravity = Gravity.TOP or Gravity.START; x = dp(18); y = dp(180) }
         runCatching { wm?.addView(b, params); bubble = b; bubbleParams = params; showLiveMic() }.onFailure { stopSelf() }
     }
 
     private fun showLiveMic() {
         if (liveMic != null) return
         val mic = ImageButton(this).apply { setImageResource(R.drawable.ic_gv_mic); contentDescription = "Live voice assistant. Tap to start or stop continuous listening"; background = rounded(0xFF202733.toInt(), 50); setPadding(dp(12), dp(12), dp(12), dp(12)); elevation = 14f; setOnClickListener { toggleLiveVoice() }; setOnTouchListener(LiveMicDragTouchListener()) }
-        val params = WindowManager.LayoutParams(dp(54), dp(54), WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY, WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE, PixelFormat.TRANSLUCENT).apply { gravity = Gravity.TOP or Gravity.START; x = dp(82); y = dp(180) }
+        val params = WindowManager.LayoutParams(dp(54), dp(54), WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY, WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_SECURE, PixelFormat.TRANSLUCENT).apply { gravity = Gravity.TOP or Gravity.START; x = dp(82); y = dp(180) }
         runCatching { wm?.addView(mic, params); liveMic = mic; liveMicParams = params }.onFailure { liveMic = null; liveMicParams = null }
     }
 
     private fun toggleLiveVoice() {
-        liveVoiceActive = !liveVoiceActive
-        if (liveVoiceActive) {
+        if (!liveVoiceActive) {
+            if (Build.VERSION.SDK_INT >= 23 && checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) { statusView?.text = "VOICE • MICROPHONE PERMISSION REQUIRED"; addMessage("assistant", "Microphone permission is not enabled. Allow it in Android settings, then tap the mic again."); return }
+            liveVoiceActive = true
+            ensureForeground(true)
             statusView?.text = "VOICE • LIVE MODE • LISTENING"
             liveMic?.setBackground(rounded(0xFFB8FF3D.toInt(), 50)); liveMic?.setColorFilter(Color.BLACK)
             voiceRetryCount = 0
             startVoiceAttempt()
         } else {
+            liveVoiceActive = false
             speechRecognizer?.cancel(); speechRecognizer?.destroy(); speechRecognizer = null
+            ensureForeground(false)
             liveMic?.setBackground(rounded(0xFF202733.toInt(), 50)); liveMic?.setColorFilter(0xFFB8FF3D.toInt())
             statusView?.text = "VOICE • LIVE MODE OFF"
         }
@@ -116,8 +134,9 @@ class AssistantOverlayService : Service(), TextToSpeech.OnInitListener {
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(14), dp(12), dp(14), dp(12)); background = rounded(0xF010141B.toInt(), 22); elevation = 18f }
         val header = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
         val title = TextView(this).apply { text = "GAMEVISION AI"; textSize = 14f; setTextColor(0xFFF4F7FA.toInt()); typeface = android.graphics.Typeface.DEFAULT_BOLD }
-        val close = TextView(this).apply { text = "×"; textSize = 22f; setTextColor(0xFF8D9AAA.toInt()); gravity = Gravity.CENTER; setOnClickListener { removePanel() } }
-        header.addView(title, LinearLayout.LayoutParams(0, dp(34), 1f)); header.addView(close, LinearLayout.LayoutParams(dp(36), dp(34))); root.addView(header)
+        val minimize = TextView(this).apply { text = "−"; textSize = 22f; setTextColor(0xFF8D9AAA.toInt()); gravity = Gravity.CENTER; contentDescription = "Minimize GameVision"; setOnClickListener { removePanel() } }
+        val close = TextView(this).apply { text = "×"; textSize = 22f; setTextColor(0xFF8D9AAA.toInt()); gravity = Gravity.CENTER; contentDescription = "Close GameVision panel"; setOnClickListener { removePanel() } }
+        header.addView(title, LinearLayout.LayoutParams(0, dp(34), 1f)); header.addView(minimize, LinearLayout.LayoutParams(dp(36), dp(34))); header.addView(close, LinearLayout.LayoutParams(dp(36), dp(34))); root.addView(header)
         statusView = TextView(this).apply { text = if (liveVoiceActive) "VOICE • LIVE MODE" else "CAPTURE • CHECKING"; textSize = 9f; setTextColor(0xFFB8FF3D.toInt()); typeface = android.graphics.Typeface.DEFAULT_BOLD; setPadding(0, 0, 0, dp(7)) }; root.addView(statusView)
         val access = textButton("ACCESSIBILITY") { openAccessibilitySettings() }; root.addView(access, LinearLayout.LayoutParams(-1, dp(34)).apply { setMargins(0, 0, 0, dp(7)) })
         scroll = ScrollView(this).apply { isFillViewport = true; background = rounded(0xFF151A22.toInt(), 14) }
@@ -126,24 +145,23 @@ class AssistantOverlayService : Service(), TextToSpeech.OnInitListener {
         input = EditText(this).apply { hint = "Message GameVision…"; textSize = 13f; setTextColor(0xFFF4F7FA.toInt()); setHintTextColor(0xFF687586.toInt()); maxLines = 3; background = rounded(0xFF171D26.toInt(), 16); setPadding(dp(12), dp(8), dp(12), dp(8)); isFocusableInTouchMode = true }
         chatRow.addView(input, LinearLayout.LayoutParams(0, dp(52), 1f).apply { setMargins(0, 0, dp(5), 0) }); chatRow.addView(iconButton(R.drawable.ic_gv_mic, "Toggle live voice mode") { toggleLiveVoice() }, LinearLayout.LayoutParams(dp(46), dp(46)).apply { setMargins(0, 0, dp(3), 0) }); chatRow.addView(iconButton(R.drawable.ic_gv_send, "Send message") { sendCurrent() }, LinearLayout.LayoutParams(dp(46), dp(46))); root.addView(chatRow)
         val controls = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }; controls.addView(iconButton(R.drawable.ic_gv_auto, "Start automatic control") { startAuto() }, LinearLayout.LayoutParams(0, dp(40), 1f).apply { setMargins(0, dp(7), dp(3), 0) }); controls.addView(iconButton(R.drawable.ic_gv_stop, "Stop automatic control") { stopAuto() }, LinearLayout.LayoutParams(0, dp(40), 1f).apply { setMargins(dp(3), dp(7), 0, 0) }); root.addView(controls)
-        val params = WindowManager.LayoutParams(dp(330), WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY, WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL, PixelFormat.TRANSLUCENT).apply { gravity = Gravity.TOP or Gravity.START; x = max(8, (bubbleParams?.x ?: 18) - dp(130)); y = max(dp(65), (bubbleParams?.y ?: 180) - dp(20)); softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE }
-        runCatching { wm?.addView(root, params); panel = root; input?.requestFocus(); pollFrameStatus(); handler.removeCallbacks(framePoller); handler.post(framePoller) }; renderMessages()
+        val params = WindowManager.LayoutParams(dp(330), WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY, WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or WindowManager.LayoutParams.FLAG_SECURE, PixelFormat.TRANSLUCENT).apply { gravity = Gravity.TOP or Gravity.START; x = max(8, (bubbleParams?.x ?: 18) - dp(130)); y = max(dp(65), (bubbleParams?.y ?: 180) - dp(20)); softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE }
+        runCatching { wm?.addView(root, params); panel = root; pollFrameStatus(); handler.removeCallbacks(framePoller); handler.post(framePoller) }.onFailure { statusView = null }
+        renderMessages()
     }
 
     private fun sendCurrent() {
         val text = input?.text?.toString().orEmpty().trim()
         if (text.isBlank()) return
         input?.setText("")
-        addMessage("user", text)
-        if (looksLikeActionCommand(text)) startAutoGoal(text) else ask(text)
+        dispatchUserText(text)
     }
-    private fun looksLikeActionCommand(text: String): Boolean {
-        val value = text.trim().lowercase(Locale.US)
-        if (value.isBlank()) return false
-        val question = value.matches(Regex("^(what|why|how|when|where|who|which|can you explain|tell me|is it|are you|do you know)\\b.*")) || value.endsWith("?")
-        if (question && !value.matches(Regex("^(can you|could you|please|would you|will you|are you able to)\\b.*\\b(open|launch|tap|click|press|hold|swipe|scroll|type|enter|select|choose|close|go|start|stop|play|send|reply|find|search|turn on|turn off|enable|disable|move|do|perform|execute|make)\\b.*"))) return false
-        val commandLead = Regex("^(please\\s+|can you\\s+|could you\\s+|would you\\s+|will you\\s+|i want you to\\s+|i need you to\\s+|help me\\s+|go ahead and\\s+)?(tap|click|press|touch|hold|long press|double tap|swipe|scroll|drag|drop|type|enter|write|open|launch|start|run|close|select|choose|find|search|send|reply|go back|go home|navigate|turn on|turn off|enable|disable|move|play|stop|do|perform|execute|make|use|check|look at|continue)\\b.*")
-        return commandLead.matches(value) || value.contains(" for me") || value.startsWith("i want you to ") || value.startsWith("i need you to ") || value.startsWith("help me ")
+
+    private fun dispatchUserText(text: String) {
+        val value = text.trim()
+        if (value.isBlank()) return
+        addMessage("user", value)
+        if (AssistantCommandClassifier.isActionCommand(value)) startAutoGoal(value) else ask(value)
     }
 
     private fun ask(question: String) {
@@ -155,31 +173,12 @@ class AssistantOverlayService : Service(), TextToSpeech.OnInitListener {
                 val token = AuthStore.token(this).orEmpty(); if (token.isNotBlank()) connection.setRequestProperty("Authorization", "Bearer $token")
                 val array = JSONArray(); history.forEach { array.put(JSONObject().put("role", it.role).put("content", it.content)) }; connection.outputStream.use { it.write(JSONObject().put("instruction", question).put("messages", array).toString().toByteArray(Charsets.UTF_8)) }
                 val code = connection.responseCode; val text = (if (code in 200..299) connection.inputStream else connection.errorStream)?.bufferedReader()?.use { it.readText() }.orEmpty(); val json = if (text.isNotBlank()) JSONObject(text) else JSONObject(); val answer = json.optJSONObject("reply")?.optString("answer").orEmpty().ifBlank { json.optString("error").ifBlank { "Assistant returned no answer." } }; val provider = json.optString("provider", "AI"); val vision = json.optBoolean("visionUsed", false); val errorCode = json.optString("code", "")
-                handler.post {
-                    when {
-                        code in 200..299 -> { addMessage("assistant", answer); statusView?.text = "AI • ${provider.uppercase(Locale.US)} • ${if (vision) "VISION ON" else "CHAT"}"; speak(answer); scheduleLiveListen() }
-                        code == 401 -> { addMessage("assistant", "Your GameVision session expired. Sign in again to continue."); statusView?.text = "ACCOUNT • SIGN IN REQUIRED" }
-                        code == 409 -> { addMessage("assistant", "Screen capture is not ready yet. Keep Monitor running and I will use the next frame."); statusView?.text = "CAPTURE • WAITING FOR FRAME" }
-                        code == 429 -> { addMessage("assistant", errorMessage(errorCode, answer)); statusView?.text = if (errorCode == "FREE_ALLOWANCE_EXHAUSTED") "AI • ALLOWANCE USED • AUTO RESET" else "AI • RATE LIMITED • RETRY" }
-                        else -> { addMessage("assistant", errorMessage(errorCode, answer)); statusView?.text = "AI • ${errorCode.ifBlank { "SERVICE ERROR" }} • RETRY" }
-                    }
-                }
+                handler.post { when { code in 200..299 -> { addMessage("assistant", answer); statusView?.text = "AI • ${provider.uppercase(Locale.US)} • ${if (vision) "VISION ON" else "CHAT"}"; speak(answer); scheduleLiveListen() }; code == 401 -> { addMessage("assistant", "Your GameVision session expired. Sign in again to continue."); statusView?.text = "ACCOUNT • SIGN IN REQUIRED" }; code == 409 -> { addMessage("assistant", "Screen capture is not ready yet. Keep Monitor running and I will use the next frame."); statusView?.text = "CAPTURE • WAITING FOR FRAME" }; code == 429 -> { addMessage("assistant", errorMessage(errorCode, answer)); statusView?.text = if (errorCode == "FREE_ALLOWANCE_EXHAUSTED") "AI • ALLOWANCE USED • AUTO RESET" else "AI • RATE LIMITED • RETRY" }; else -> { addMessage("assistant", errorMessage(errorCode, answer)); statusView?.text = "AI • ${errorCode.ifBlank { "SERVICE ERROR" }} • RETRY" } } }
             } catch (e: Exception) { handler.post { addMessage("assistant", "GameVision cannot reach the AI service. Check your network connection and try again."); statusView?.text = "AI • CONNECTION ERROR • RETRY" } } finally { connection?.disconnect() }
         }
     }
 
-    private fun errorMessage(code: String, fallback: String): String = when (code) {
-        "AI_NOT_CONFIGURED" -> "Free AI is not configured on the GameVision server. The OpenRouter key must be added in Render."
-        "OPENROUTER_AUTH_FAILED" -> "OpenRouter rejected the server key. The server administrator needs to check the Render OPENROUTER_API_KEY."
-        "OPENROUTER_CREDITS_REQUIRED" -> "OpenRouter reported that the selected upstream route needs credits. No GameVision credit was consumed."
-        "OPENROUTER_TIMEOUT" -> "OpenRouter timed out. The command is safe to retry."
-        "FREE_AI_RATE_LIMITED" -> "The free OpenRouter route is temporarily rate-limited. Please retry shortly."
-        "FREE_AI_UPSTREAM_ERROR" -> "The free AI provider returned an upstream error. Please retry shortly."
-        "AI_EMPTY_RESPONSE", "AI_INVALID_RESPONSE" -> "The AI provider returned an unusable response. Please retry."
-        "FREE_ALLOWANCE_EXHAUSTED" -> fallback.ifBlank { "Your free GameVision allowance has been used. It will reset automatically." }
-        else -> fallback.ifBlank { "The AI service returned an error. Please retry." }
-    }
-
+    private fun errorMessage(code: String, fallback: String): String = when (code) { "AI_NOT_CONFIGURED" -> "Free AI is not configured on the GameVision server. The OpenRouter key must be added in Render."; "OPENROUTER_AUTH_FAILED" -> "OpenRouter rejected the server key. The server administrator needs to check the Render OPENROUTER_API_KEY."; "OPENROUTER_CREDITS_REQUIRED" -> "OpenRouter reported that the selected upstream route needs credits. No GameVision credit was consumed."; "OPENROUTER_TIMEOUT" -> "OpenRouter timed out. The command is safe to retry."; "FREE_AI_RATE_LIMITED" -> "The free OpenRouter route is temporarily rate-limited. Please retry shortly."; "FREE_AI_UPSTREAM_ERROR" -> "The free AI provider returned an upstream error. Please retry shortly."; "AI_EMPTY_RESPONSE", "AI_INVALID_RESPONSE" -> "The AI provider returned an unusable response. Please retry."; "FREE_ALLOWANCE_EXHAUSTED" -> fallback.ifBlank { "Your free GameVision allowance has been used. It will reset automatically." }; else -> fallback.ifBlank { "The AI service returned an error. Please retry." } }
     private fun scheduleLiveListen() { if (liveVoiceActive) handler.postDelayed({ if (liveVoiceActive) startVoiceAttempt() }, LIVE_RESTART_MS) }
 
     private fun pollFrameStatus() {
@@ -195,13 +194,15 @@ class AssistantOverlayService : Service(), TextToSpeech.OnInitListener {
         }
     }
 
-    private fun startAuto() { val goal = input?.text?.toString().orEmpty().trim(); if (goal.isBlank()) { addMessage("assistant", "Type or say the task first. I will send it to the action planner."); return }; input?.setText(""); addMessage("user", "AUTO: $goal"); startAutoGoal(goal) }
+    private fun startAuto() { val goal = input?.text?.toString().orEmpty().trim(); if (goal.isBlank()) { addMessage("assistant", "Type or say the task first. I will send it to the action planner."); return }; input?.setText(""); dispatchUserText(goal) }
     private fun startAutoGoal(goal: String) { val snapshot = messages.takeLast(10).map { JSONObject().put("role", it.role).put("content", it.content) }; val token = AuthStore.token(this).orEmpty(); val started = automation?.start(serverUrl, token, goal, snapshot) { status -> handler.post { statusView?.text = status; if (status.startsWith("SUCCESS") || status.startsWith("FAILED")) addMessage("assistant", status) } } == true; if (!started && automation?.isActive() != true) addMessage("assistant", "Control is not active. Enable GameVision Accessibility, then try the command again.") }
     private fun stopAuto() { automation?.stop("Stopped by user"); statusView?.text = "AUTO • STOPPED BY USER" }
 
     private fun startVoiceAttempt() {
+        if (!liveVoiceActive) return
         if (Build.VERSION.SDK_INT >= 23 && checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) { addMessage("assistant", "Microphone permission is not enabled. Enable it in Android app permissions, then tap the mic icon again."); liveVoiceActive = false; return }
         if (!SpeechRecognizer.isRecognitionAvailable(this)) { addMessage("assistant", "Speech recognition is not available on this device."); liveVoiceActive = false; return }
+        ensureForeground(true)
         speechRecognizer?.cancel(); speechRecognizer?.destroy(); speechRecognizer = null
         val recognizer = if (Build.VERSION.SDK_INT >= 31 && SpeechRecognizer.isOnDeviceRecognitionAvailable(this)) runCatching { SpeechRecognizer.createOnDeviceSpeechRecognizer(this) }.getOrNull() else null
         speechRecognizer = recognizer ?: SpeechRecognizer.createSpeechRecognizer(this)
@@ -210,23 +211,23 @@ class AssistantOverlayService : Service(), TextToSpeech.OnInitListener {
             override fun onBeginningOfSpeech() { handler.post { statusView?.text = "VOICE • RECEIVING" } }
             override fun onRmsChanged(rmsdB: Float) {}
             override fun onPartialResults(partialResults: android.os.Bundle?) { val text = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull().orEmpty(); if (text.isNotBlank()) handler.post { input?.setText(text); input?.setSelection(input?.text?.length ?: 0); statusView?.text = "VOICE • $text" } }
-            override fun onResults(results: android.os.Bundle?) { val candidates = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION).orEmpty(); val text = candidates.firstOrNull { it.isNotBlank() }?.trim().orEmpty(); handler.post { speechRecognizer?.destroy(); speechRecognizer = null; if (text.isNotBlank()) { voiceRetryCount = 0; input?.setText(text); input?.setSelection(text.length); sendCurrent(); scheduleLiveListen() } else retryVoice("VOICE • NO SPEECH") } }
+            override fun onResults(results: android.os.Bundle?) { val candidates = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION).orEmpty(); val text = candidates.firstOrNull { it.isNotBlank() }?.trim().orEmpty(); handler.post { speechRecognizer?.destroy(); speechRecognizer = null; if (text.isNotBlank()) { voiceRetryCount = 0; dispatchUserText(text); scheduleLiveListen() } else retryVoice("VOICE • NO SPEECH") } }
             override fun onError(error: Int) { val message = voiceError(error); handler.post { speechRecognizer?.destroy(); speechRecognizer = null; retryVoice(message) } }
             override fun onBufferReceived(buffer: ByteArray?) {}
             override fun onEndOfSpeech() { handler.post { statusView?.text = "VOICE • PROCESSING" } }
             override fun onEvent(eventType: Int, params: android.os.Bundle?) {}
         }) }
-        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply { putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM); putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault().toLanguageTag()); putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, Locale.getDefault().toLanguageTag()); putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3); putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true); putExtra(RecognizerIntent.EXTRA_PROMPT, if (liveVoiceActive) "Live GameVision command" else "Speak your GameVision command"); putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 1800L); putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 700L); putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 1400L) }
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply { putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM); putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault().toLanguageTag()); putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, Locale.getDefault().toLanguageTag()); putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3); putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true); putExtra(RecognizerIntent.EXTRA_PROMPT, "Live GameVision command"); putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 1800L); putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 700L); putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 1400L) }
         runCatching { speechRecognizer?.startListening(intent) }.onFailure { speechRecognizer?.destroy(); speechRecognizer = null; retryVoice("VOICE • START FAILED") }
     }
-    private fun retryVoice(message: String) { if (voiceRetryCount < MAX_VOICE_RETRIES) { voiceRetryCount++; statusView?.text = "$message • RETRY $voiceRetryCount/$MAX_VOICE_RETRIES"; handler.postDelayed({ if (liveVoiceActive || voiceRetryCount <= MAX_VOICE_RETRIES) startVoiceAttempt() }, 700L) } else if (liveVoiceActive) { voiceRetryCount = 0; handler.postDelayed({ if (liveVoiceActive) startVoiceAttempt() }, 1200L) } else statusView?.text = "$message • TAP MIC TO TRY AGAIN" }
+    private fun retryVoice(message: String) { if (!liveVoiceActive) return; if (voiceRetryCount < MAX_VOICE_RETRIES) { voiceRetryCount++; statusView?.text = "$message • RETRY $voiceRetryCount/$MAX_VOICE_RETRIES"; handler.postDelayed({ if (liveVoiceActive) startVoiceAttempt() }, 700L) } else { voiceRetryCount = 0; handler.postDelayed({ if (liveVoiceActive) startVoiceAttempt() }, 1200L) } }
     private fun voiceError(error: Int): String = when (error) { SpeechRecognizer.ERROR_AUDIO -> "VOICE ERROR • MICROPHONE AUDIO"; SpeechRecognizer.ERROR_CLIENT -> "VOICE ERROR • RECOGNIZER RESET"; SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "VOICE ERROR • MICROPHONE PERMISSION"; SpeechRecognizer.ERROR_NETWORK -> "VOICE ERROR • SPEECH NETWORK"; SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "VOICE ERROR • SPEECH TIMEOUT"; SpeechRecognizer.ERROR_NO_MATCH -> "VOICE • NO MATCH"; SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "VOICE • BUSY"; SpeechRecognizer.ERROR_SERVER -> "VOICE ERROR • SERVER"; SpeechRecognizer.ERROR_SERVER_DISCONNECTED -> "VOICE ERROR • DISCONNECTED"; SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "VOICE • NO SPEECH"; SpeechRecognizer.ERROR_TOO_MANY_REQUESTS -> "VOICE • BUSY"; else -> "VOICE ERROR • CODE $error" }
 
     private fun addMessage(role: String, content: String) { messages += Message(role, content.take(1600)); while (messages.size > 24) messages.removeAt(0); renderMessages() }
     private fun renderMessages() { handler.post { val box = messagesLayout ?: return@post; box.removeAllViews(); if (messages.isEmpty()) addMessageView(box, "assistant", "Ready. Monitor will show CAPTURE LIVE when a fresh screen frame reaches the server. Tap the floating mic to start LIVE voice mode; drag it anywhere on screen. I can chat, understand the visible screen, and execute supported Android UI commands when Accessibility is enabled.") else messages.forEach { addMessageView(box, it.role, it.content) }; scroll?.post { scroll?.fullScroll(View.FOCUS_DOWN) } } }
     private fun addMessageView(box: LinearLayout, role: String, text: String) { val view = TextView(this).apply { this.text = "${if (role == "user") "YOU" else "AI"}\n$text"; textSize = 12f; setTextColor(if (role == "user") 0xFFB8FF3D.toInt() else 0xFFE7ECF2.toInt()); background = rounded(if (role == "user") 0x3326B500 else 0xFF202733.toInt(), 12); setPadding(dp(9), dp(8), dp(9), dp(8)) }; box.addView(view, LinearLayout.LayoutParams(-1, LinearLayout.LayoutParams.WRAP_CONTENT).apply { setMargins(0, 0, 0, dp(7)) }) }
-    private fun textButton(label: String, click: () -> Unit) = TextView(this).apply { text = label; textSize = 9f; gravity = Gravity.CENTER; setTextColor(0xFFB8FF3D.toInt()); typeface = android.graphics.Typeface.DEFAULT_BOLD; background = rounded(0x3326B500, 12); setOnClickListener { click() } }
-    private fun iconButton(icon: Int, description: String, click: () -> Unit) = ImageButton(this).apply { setImageResource(icon); setColorFilter(0xFFB8FF3D.toInt()); contentDescription = description; background = rounded(0x3326B500, 12); setPadding(dp(11), dp(11), dp(11), dp(11)); isFocusable = true; setOnClickListener { click() } }
+    private fun textButton(label: String, click: () -> Unit) = TextView(this).apply { text = label; textSize = 9f; gravity = Gravity.CENTER; setTextColor(0xFFB8FF3D.toInt()); typeface = android.graphics.Typeface.DEFAULT_BOLD; background = rounded(0x3326B500, 12); isFocusable = true; isClickable = true; setOnClickListener { click() } }
+    private fun iconButton(icon: Int, description: String, click: () -> Unit) = ImageButton(this).apply { setImageResource(icon); setColorFilter(0xFFB8FF3D.toInt()); contentDescription = description; background = rounded(0x3326B500, 12); setPadding(dp(11), dp(11), dp(11), dp(11)); isFocusable = true; isClickable = true; setOnClickListener { click() } }
     private fun openAccessibilitySettings() { runCatching { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)); statusView?.text = "ENABLE GAMEVISION ACCESSIBILITY" } }
     private fun speak(text: String) { handler.post { tts?.speak(text.take(700), TextToSpeech.QUEUE_FLUSH, null, "gamevision-answer") } }
     private fun removePanel() { handler.removeCallbacks(framePoller); panel?.let { runCatching { wm?.removeView(it) } }; panel = null; scroll = null; messagesLayout = null; input = null; statusView = null }
@@ -234,7 +235,7 @@ class AssistantOverlayService : Service(), TextToSpeech.OnInitListener {
     private inner class DragTouchListener(private val paramsProvider: () -> WindowManager.LayoutParams?) : View.OnTouchListener { private var downX = 0f; private var downY = 0f; private var startX = 0; private var startY = 0; private var dragging = false; override fun onTouch(v: View, event: MotionEvent): Boolean { val p = paramsProvider() ?: return false; when (event.actionMasked) { MotionEvent.ACTION_DOWN -> { downX = event.rawX; downY = event.rawY; startX = p.x; startY = p.y; dragging = false; return true }; MotionEvent.ACTION_MOVE -> { val dx = event.rawX - downX; val dy = event.rawY - downY; if (kotlin.math.abs(dx) > dp(6) || kotlin.math.abs(dy) > dp(6)) dragging = true; p.x = startX + dx.toInt(); p.y = startY + dy.toInt(); wm?.updateViewLayout(v, p); return true }; MotionEvent.ACTION_UP -> { if (!dragging) v.performClick(); return true } }; return false } }
     private inner class LiveMicDragTouchListener : View.OnTouchListener { private var downX = 0f; private var downY = 0f; private var startX = 0; private var startY = 0; private var dragging = false; override fun onTouch(v: View, event: MotionEvent): Boolean { val p = liveMicParams ?: return false; when (event.actionMasked) { MotionEvent.ACTION_DOWN -> { downX = event.rawX; downY = event.rawY; startX = p.x; startY = p.y; dragging = false; return true }; MotionEvent.ACTION_MOVE -> { val dx = event.rawX - downX; val dy = event.rawY - downY; if (kotlin.math.abs(dx) > dp(6) || kotlin.math.abs(dy) > dp(6)) dragging = true; p.x = startX + dx.toInt(); p.y = startY + dy.toInt(); wm?.updateViewLayout(v, p); return true }; MotionEvent.ACTION_UP -> { if (!dragging) v.performClick(); return true } }; return false } }
     private fun createChannel() { if (Build.VERSION.SDK_INT >= 26) getSystemService(NotificationManager::class.java)?.createNotificationChannel(NotificationChannel(CHANNEL, "GameVision Assistant", NotificationManager.IMPORTANCE_LOW)) }
-    private fun notification(): Notification = Notification.Builder(this, CHANNEL).setContentTitle("GameVision Assistant").setContentText("Screen monitor, chat and optional AUTO control are active").setSmallIcon(android.R.drawable.ic_dialog_info).setOngoing(true).build()
+    private fun notification(): Notification = Notification.Builder(this, CHANNEL).setContentTitle("GameVision Assistant").setContentText(if (liveVoiceActive) "Live voice, screen monitoring and user-requested control are active" else "Screen monitor, chat and optional AUTO control are active").setSmallIcon(android.R.drawable.ic_dialog_info).setOngoing(true).build()
     private fun rounded(color: Int, radius: Int) = GradientDrawable().apply { setColor(color); cornerRadius = dp(radius).toFloat() }
     private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
     override fun onInit(status: Int) {}
