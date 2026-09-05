@@ -12,7 +12,8 @@ test("assistant prompt is generic, visually grounded, and fast", () => {
   assert.match(prompt, /football/i);
   assert.match(prompt, /FAST|CONCISE|DIRECT/i);
   assert.match(prompt, /current screen/i);
-  assert.match(prompt, /remember|continuity/i);
+  assert.match(prompt, /RECENT CONVERSATION|continuity/i);
+  assert.match(prompt, /live Android tools/i);
 });
 
 test("assistant prompt defines game assistance modes", () => {
@@ -21,9 +22,16 @@ test("assistant prompt defines game assistance modes", () => {
   assert.match(prompt, /only tap when I tell you/i);
 });
 
+test("assistant prompt can carry live Android tool state", () => {
+  const prompt = buildAssistantPrompt("Open the settings tab", [], false, false, "package=com.example\nButton|label=Settings|clickable=true");
+  assert.match(prompt, /com\.example/);
+  assert.match(prompt, /Settings/);
+  assert.match(prompt, /clickable=true/);
+});
+
 test("automation prompt is game agnostic and one-step", () => {
   const prompt = buildAutomationPrompt("Play this game for me.");
-  assert.match(prompt, /NOT specialized for football/i);
+  assert.match(prompt, /NOT specialized for one game or app/i);
   assert.match(prompt, /exactly ONE next action/i);
   assert.match(prompt, /TAP/);
   assert.match(prompt, /SWIPE/);
@@ -33,13 +41,13 @@ test("automation prompt is game agnostic and one-step", () => {
   assert.match(prompt, /TWO_FINGER_SWIPE/);
   assert.match(prompt, /TYPE_TEXT/);
   assert.match(prompt, /GLOBAL ACTIONS/i);
-  assert.match(prompt, /re-check the current screen/i);
+  assert.match(prompt, /re-evaluate returned live state/i);
 });
 
 test("automation prompt defines mode-aware control boundaries", () => {
   const prompt = buildAutomationPrompt("Assist me, but only tap when I tell you.");
   assert.match(prompt, /MIXED/i);
-  assert.match(prompt, /only tap after that explicit authorization/i);
+  assert.match(prompt, /explicit boundaries/i);
   assert.match(prompt, /guide|explain/i);
 });
 
