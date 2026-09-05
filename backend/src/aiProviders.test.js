@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { classifyOpenRouterFailure, isUsableOpenRouterKey } from "./aiProviders.js";
+import { buildProviderOrder, classifyOpenRouterFailure, isUsableApiKey, isUsableOpenRouterKey } from "./aiProviders.js";
 
 test("rejects missing OpenRouter keys", () => {
   assert.equal(isUsableOpenRouterKey(""), false);
@@ -15,6 +15,19 @@ test("rejects unresolved environment placeholders", () => {
 
 test("accepts a non-placeholder OpenRouter key", () => {
   assert.equal(isUsableOpenRouterKey("sk-or-v1-example-key-value"), true);
+});
+
+test("accepts non-placeholder provider keys", () => {
+  assert.equal(isUsableApiKey("gemini-example-key"), true);
+  assert.equal(isUsableApiKey("openai-example-key"), true);
+  assert.equal(isUsableApiKey("${OPENAI_API_KEY}"), false);
+});
+
+test("rotates configured providers without requiring simultaneous calls", () => {
+  const providers = ["gemini", "openai", "openrouter"];
+  assert.deepEqual(buildProviderOrder(providers, 0), ["gemini", "openai", "openrouter"]);
+  assert.deepEqual(buildProviderOrder(providers, 1), ["openai", "openrouter", "gemini"]);
+  assert.deepEqual(buildProviderOrder(providers, 2), ["openrouter", "gemini", "openai"]);
 });
 
 test("classifies common OpenRouter failures into safe actionable states", () => {
