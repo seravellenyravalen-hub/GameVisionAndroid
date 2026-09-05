@@ -198,15 +198,6 @@ export async function reserveAutomationCredit(userId, requestedSessionId = null)
   finally { client.release(); }
 }
 
-export async function closeAutomationSession(userId, sessionId, refund = false) {
-  if (!sessionId) return null;
-  await ensureAuthSchema();
-  const result = await getPool().query(`UPDATE gamevision_ai_sessions SET closed_at = NOW() WHERE session_id = $1 AND user_id = $2 AND closed_at IS NULL RETURNING *`, [String(sessionId).slice(0, 128), userId]);
-  if (!result.rows[0]) return null;
-  if (refund) return refundCredit(userId);
-  return getUserForToken; // marker replaced below
-}
-
 export async function refundCredit(userId) {
   await ensureAuthSchema();
   const result = await getPool().query(`UPDATE gamevision_users SET credits_remaining = LEAST($1, credits_remaining + 1) WHERE id = $2 RETURNING *`, [FREE_CREDITS, userId]);
