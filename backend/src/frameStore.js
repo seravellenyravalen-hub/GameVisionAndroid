@@ -10,7 +10,9 @@ export class FrameStore {
 
   put(userId, images, capturedAt = Date.now()) {
     const sequence = ++this.sequence;
-    const frame = { images, capturedAt, sequence, serverEpoch: this.epoch, userId };
+    const full = images.find((image) => image?.role === "full") || images[0] || null;
+    const fingerprint = full?.data ? crypto.createHash("sha256").update(String(full.data)).digest("hex").slice(0, 16) : null;
+    const frame = { images, capturedAt, sequence, serverEpoch: this.epoch, userId, fingerprint };
     this.frames.set(String(userId), frame);
     return frame;
   }
@@ -21,14 +23,15 @@ export class FrameStore {
 
   status(userId) {
     const frame = userId == null ? [...this.frames.values()].sort((a, b) => b.sequence - a.sequence)[0] : this.get(userId);
-    if (!frame) return { sequence: 0, capturedAt: null, ageMs: null, fresh: false, serverEpoch: this.epoch };
+    if (!frame) return { sequence: 0, capturedAt: null, ageMs: null, fresh: false, serverEpoch: this.epoch, fingerprint: null };
     const ageMs = Date.now() - frame.capturedAt;
     return {
       sequence: frame.sequence,
       capturedAt: frame.capturedAt,
       ageMs: Math.max(0, ageMs),
       fresh: ageMs >= 0 && ageMs <= this.maxAgeMs,
-      serverEpoch: frame.serverEpoch
+      serverEpoch: frame.serverEpoch,
+      fingerprint: frame.fingerprint
     };
   }
 
