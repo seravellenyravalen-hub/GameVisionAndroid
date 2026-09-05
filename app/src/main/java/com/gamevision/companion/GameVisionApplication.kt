@@ -1,6 +1,8 @@
 package com.gamevision.companion
 
+import android.app.Activity
 import android.app.Application
+import android.os.Bundle
 import java.net.CookieHandler
 import java.net.CookieManager
 import java.net.CookiePolicy
@@ -16,6 +18,23 @@ class GameVisionApplication : Application() {
         super.onCreate()
         CookieHandler.setDefault(cookieManager)
         installSessionCookie()
+        registerActivityLifecycleCallbacks(object : ActivityLifecycleCallbacks {
+            override fun onActivityResumed(activity: Activity) {
+                if (activity is MainActivity) ForegroundState.gameVisionActivityForeground = true
+            }
+
+            override fun onActivityPaused(activity: Activity) {
+                if (activity is MainActivity) ForegroundState.gameVisionActivityForeground = false
+            }
+
+            override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) = Unit
+            override fun onActivityStarted(activity: Activity) = Unit
+            override fun onActivityStopped(activity: Activity) = Unit
+            override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) = Unit
+            override fun onActivityDestroyed(activity: Activity) {
+                if (activity is MainActivity) ForegroundState.gameVisionActivityForeground = false
+            }
+        })
     }
 
     fun installSessionCookie() {
