@@ -33,6 +33,7 @@ import java.net.URL
 import java.security.MessageDigest
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.roundToInt
 
 class MonitorService : Service() {
@@ -56,9 +57,11 @@ class MonitorService : Service() {
         fun latestFrameChanged(): Boolean = latestSourceChanged
     }
 
-    private val executor = Executors.newSingleThreadExecutor()
-    private val running = AtomicBoolean(false)
+    private val frameExecutor = Executors.newSingleThreadExecutor()
+    private val uploadExecutor = Executors.newSingleThreadExecutor()
+    private val pendingUpload = AtomicReference<List<EncodedImage>?>(null)
     private val uploadBusy = AtomicBoolean(false)
+    private val running = AtomicBoolean(false)
     private val mainHandler = Handler(Looper.getMainLooper())
     private var projection: MediaProjection? = null
     private var virtualDisplay: VirtualDisplay? = null
@@ -104,8 +107,12 @@ class MonitorService : Service() {
     }
 
     private fun onFrame(imageReader: ImageReader) {
-        if (!running.get() || MainActivity.isForeground) return
+        if (!running.get()) return
         val image = runCatching { imageReader.acquireLatestImage() }.getOrNull() ?: return
+        if (ForegroundState.gameVisionActivityForeground) {
+            runCatching { image.close() }
+            return
+        }
         val now = System.currentTimeMillis()
         if (!livePolicy.shouldCapture(now)) {
             runCatching { image.close() }
@@ -114,22 +121,18 @@ class MonitorService : Service() {
         livePolicy.markCaptured(now)
         val snapshot = try { imageToBitmap(image) } catch (_: Exception) { null } finally { runCatching { image.close() } }
         if (snapshot == null) return
-        executor.execute {
+        frameExecutor.execute {
             try {
                 val frameSet = bitmapToFrameSet(snapshot)
-                val full = frameSet.firstOrNull()
-                if (full != null) {
-                    val jpeg = full.data.copyOf()
-                    val fingerprint = fingerprint(jpeg)
-                    val previous = latestJpeg
-                    latestSourceChanged = previous == null || fingerprint(previous) != fingerprint
-                    latestJpeg = jpeg
-                    latestCapturedAt = System.currentTimeMillis()
-                    latestSequence += 1L
-                    if (livePolicy.shouldUpload(fingerprint, latestCapturedAt) && uploadBusy.compareAndSet(false, true)) {
-                        uploadFrameAsync(frameSet)
-                    }
-                }
+                val full = frameSet.firstOrNull() ?: return@execute
+                val jpeg = full.data.copyOf()
+                val fingerprint = fingerprint(jpeg)
+                val previous = latestJpeg
+                latestSourceChanged = previous == null || fingerprint(previous) != fingerprint
+                latestJpeg = jpeg
+                latestCapturedAt = System.currentTimeMillis()
+                latestSequence += 1L
+                if (livePolicy.shouldUpload(fingerprint, latestCapturedAt)) enqueueUpload(frameSet)
             } catch (e: Exception) {
                 updateHud("OFFLINE", "${e.javaClass.simpleName}: ${e.message ?: "vision pipeline failed"}")
             } finally { snapshot.recycle() }
@@ -179,11 +182,33 @@ class MonitorService : Service() {
     private fun jpeg(bitmap: Bitmap, quality: Int): ByteArray = ByteArrayOutputStream().use { out -> bitmap.compress(Bitmap.CompressFormat.JPEG, quality, out); out.toByteArray() }
     private fun fingerprint(data: ByteArray): String = MessageDigest.getInstance("SHA-256").digest(data).take(8).joinToString("") { "%02x".format(it) }
 
-    private fun uploadFrameAsync(images: List<EncodedImage>) {
-        executor.execute {
-            try { uploadFrame(images) }
-            catch (e: Exception) { updateHud("OFFLINE", "${e.javaClass.simpleName}: ${e.message ?: "upload failed"}") }
-            finally { uploadBusy.set(false) }
+    private fun enqueueUpload(images: List<EncodedImage>) {
+        pendingUpload.set(images)
+        if (!uploadBusy.compareAndSet(false, true)) return
+        uploadExecutor.execute {
+            try {
+                while (running.get()) {
+                    val next = pendingUpload.getAndSet(null) ?: break
+                    try { uploadFrame(next) }
+                    catch (e: Exception) { updateHud("OFFLINE", "${e.javaClass.simpleName}: ${e.message ?: "upload failed"}") }
+                }
+            } finally {
+                uploadBusy.set(false)
+                if (pendingUpload.get() != null && running.get()) enqueuePendingUpload()
+            }
+        }
+    }
+
+    private fun enqueuePendingUpload() {
+        if (!uploadBusy.compareAndSet(false, true)) return
+        uploadExecutor.execute {
+            try {
+                while (running.get()) {
+                    val next = pendingUpload.getAndSet(null) ?: break
+                    try { uploadFrame(next) }
+                    catch (e: Exception) { updateHud("OFFLINE", "${e.javaClass.simpleName}: ${e.message ?: "upload failed"}") }
+                }
+            } finally { uploadBusy.set(false) }
         }
     }
 
@@ -221,8 +246,8 @@ class MonitorService : Service() {
 
     private fun updateHud(title: String, detail: String) { mainHandler.post { overlay?.let { panel -> (panel.getChildAt(1) as? TextView)?.apply { text = "$title\n$detail"; setTextColor(if (title == "OFFLINE") 0xFFFF5D67.toInt() else 0xFFF4F7FA.toInt()) } } } }
     private fun toggleHud() { mainHandler.post { if (overlay == null) showHud() else { runCatching { wm?.removeView(overlay) }; overlay = null } } }
-    private fun stopProjection() { running.set(false); active = false; uploadBusy.set(false); latestJpeg = null; latestSequence = 0L; latestCapturedAt = 0L; latestSourceChanged = false; runCatching { virtualDisplay?.release() }; virtualDisplay = null; runCatching { reader?.close() }; reader = null; runCatching { projection?.unregisterCallback(projectionCallback) }; projection = null; stopForeground(STOP_FOREGROUND_REMOVE); stopSelf() }
-    override fun onDestroy() { stopProjection(); executor.shutdownNow(); super.onDestroy() }
+    private fun stopProjection() { running.set(false); active = false; pendingUpload.set(null); uploadBusy.set(false); latestJpeg = null; latestSequence = 0L; latestCapturedAt = 0L; latestSourceChanged = false; runCatching { virtualDisplay?.release() }; virtualDisplay = null; runCatching { reader?.close() }; reader = null; runCatching { projection?.unregisterCallback(projectionCallback) }; projection = null; stopForeground(STOP_FOREGROUND_REMOVE); stopSelf() }
+    override fun onDestroy() { stopProjection(); frameExecutor.shutdownNow(); uploadExecutor.shutdownNow(); super.onDestroy() }
     override fun onBind(intent: Intent?): IBinder? = null
     private fun createChannel() { if (Build.VERSION.SDK_INT >= 26) getSystemService(NotificationManager::class.java)?.createNotificationChannel(NotificationChannel(CHANNEL, "GameVision Monitor", NotificationManager.IMPORTANCE_LOW)) }
     private fun notification(text: String) = Notification.Builder(this, CHANNEL).setContentTitle("GameVision").setContentText(text).setSmallIcon(android.R.drawable.ic_menu_view).setOngoing(true).build()
