@@ -6,6 +6,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.UUID
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -34,6 +35,7 @@ class AutomationController {
     private var lastAction: AutomationAction? = null
     private var statusListener: ((String) -> Unit)? = null
     private var fastCommand = false
+    private var aiSessionId: String? = null
 
     fun start(server: String, token: String, requestedGoal: String, previousMessages: List<JSONObject>, listener: (String) -> Unit): Boolean {
         if (active.get()) return false
@@ -46,7 +48,7 @@ class AutomationController {
         if (authToken.isBlank()) { listener("FAILED • Sign in again before using AUTO mode."); return false }
         goal = requestedGoal.trim()
         history = previousMessages.takeLast(10).toMutableList()
-        steps = 0; failures = 0; recoveryAttempts = 0; lowConfidenceRetries = 0; lastFrameSequence = 0L; lastServerEpoch = null; lastAction = null; statusListener = listener; active.set(true)
+        steps = 0; failures = 0; recoveryAttempts = 0; lowConfidenceRetries = 0; lastFrameSequence = 0L; lastServerEpoch = null; lastAction = null; statusListener = listener; aiSessionId = UUID.randomUUID().toString(); active.set(true)
 
         val fastAction = FastCommandRouter.parse(goal)
         fastCommand = fastAction != null
@@ -100,7 +102,7 @@ class AutomationController {
             connection.requestMethod = "POST"; connection.connectTimeout = 7000; connection.readTimeout = 22000; connection.doOutput = true
             connection.setRequestProperty("Content-Type", "application/json"); connection.setRequestProperty("Accept", "application/json")
             if (authToken.isNotBlank()) connection.setRequestProperty("Authorization", "Bearer $authToken")
-            val payload = JSONObject().put("goal", goal).put("minFrameSequence", lastFrameSequence).put("minFrameEpoch", lastServerEpoch).put("messages", JSONArray(history.map { it.toString() }))
+            val payload = JSONObject().put("goal", goal).put("aiSessionId", aiSessionId).put("minFrameSequence", lastFrameSequence).put("minFrameEpoch", lastServerEpoch).put("messages", JSONArray(history.map { it.toString() }))
             connection.outputStream.use { it.write(payload.toString().toByteArray(Charsets.UTF_8)) }
             val code = connection.responseCode
             val body = (if (code in 200..299) connection.inputStream else connection.errorStream)?.bufferedReader()?.use { it.readText() }.orEmpty()
@@ -110,6 +112,7 @@ class AutomationController {
             if (code == 409) { recover("the screen did not provide a fresh frame"); return }
             if (code !in 200..299) throw IllegalStateException(extractServerError(body, "HTTP $code"))
             val json = JSONObject(body)
+            aiSessionId = json.optString("aiSessionId", aiSessionId.orEmpty()).ifBlank { aiSessionId }
             val actionJson = json.optJSONObject("action") ?: throw IllegalStateException("No action returned")
             val frame = json.optJSONObject("frame")
             val sequence = frame?.optLong("sequence", lastFrameSequence) ?: lastFrameSequence
@@ -155,13 +158,9 @@ class AutomationController {
                             if (ready) {
                                 lastFrameSequence = sequence; lastServerEpoch = epoch
                                 requestDecision(50)
-                            } else {
-                                stopWithStatus("FAILED • ${error ?: "AI fallback could not obtain a fresh screen"}")
-                            }
+                            } else stopWithStatus("FAILED • ${error ?: "AI fallback could not obtain a fresh screen"}")
                         }
-                    } else {
-                        recover(result)
-                    }
+                    } else recover(result)
                     return@post
                 }
                 history += JSONObject().put("role", "assistant").put("content", "ACTION ${action.type}: ${action.reason}")
@@ -175,9 +174,7 @@ class AutomationController {
                         if (ready) {
                             lastFrameSequence = sequenceAfter; lastServerEpoch = epochAfter; failures = 0; recoveryAttempts = 0
                             if (fastCommand) stopWithStatus("SUCCESS • ${action.type} completed and verified") else requestDecision(100)
-                        } else {
-                            recover(error ?: "expected screen change did not appear")
-                        }
+                        } else recover(error ?: "expected screen change did not appear")
                     }
                 }, delay)
             }
@@ -188,36 +185,20 @@ class AutomationController {
         failures++
         recoveryAttempts++
         postStatus("RECOVERING • $reason • attempt $recoveryAttempts/$MAX_RECOVERY_ATTEMPTS")
-        if (recoveryAttempts >= MAX_RECOVERY_ATTEMPTS || failures >= MAX_RECOVERY_ATTEMPTS) {
-            stopWithStatus("FAILED • recovery limit reached: $reason")
-            return
-        }
+        if (recoveryAttempts >= MAX_RECOVERY_ATTEMPTS || failures >= MAX_RECOVERY_ATTEMPTS) { stopWithStatus("FAILED • recovery limit reached: $reason"); return }
         handler.postDelayed({
             if (!active.get()) return@postDelayed
             waitForFreshFrame(lastFrameSequence, lastServerEpoch, MAX_FRAME_WAIT_MS) { ready, sequence, epoch, error ->
                 if (!active.get()) return@waitForFreshFrame
                 if (ready) {
                     lastFrameSequence = sequence; lastServerEpoch = epoch
-                    if (fastCommand && lastAction != null) {
-                        executeAndVerify(lastAction!!)
-                    } else {
-                        requestDecision(100)
-                    }
-                } else {
-                    recover(error ?: "fresh screen still unavailable")
-                }
+                    if (fastCommand && lastAction != null) executeAndVerify(lastAction!!) else requestDecision(100)
+                } else recover(error ?: "fresh screen still unavailable")
             }
         }, 350L)
     }
 
-    private fun extractServerError(body: String, fallback: String): String {
-        return runCatching {
-            val json = JSONObject(body)
-            val code = json.optString("code").ifBlank { "SERVER_ERROR" }
-            val error = json.optString("error").ifBlank { fallback }
-            "$code: $error"
-        }.getOrDefault(fallback).take(240)
-    }
+    private fun extractServerError(body: String, fallback: String): String = runCatching { val json = JSONObject(body); val code = json.optString("code").ifBlank { "SERVER_ERROR" }; val error = json.optString("error").ifBlank { fallback }; "$code: $error" }.getOrDefault(fallback).take(240)
 
     private fun waitForFreshFrame(minSequence: Long, minEpoch: String?, timeoutMs: Long, callback: (Boolean, Long, String?, String?) -> Unit) {
         val deadline = System.currentTimeMillis() + timeoutMs
