@@ -5,12 +5,19 @@ const require = createRequire(import.meta.url);
 let Pool;
 export const FREE_CREDITS = 50;
 export const RESET_WINDOW_MS = 24 * 60 * 60 * 1000;
+export const AUTOMATION_SESSION_MS = 15 * 60 * 1000;
 const PASSWORD_MIN_LENGTH = 8;
 let pool;
 let schemaPromise;
 
 export function normalizeEmail(value) { return String(value || "").trim().toLowerCase(); }
 export function isValidEmail(value) { return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizeEmail(value)); }
+
+export function automationSessionIsActive(row, nowMs = Date.now()) {
+  if (!row || row.closed_at) return false;
+  const expiresAt = new Date(row.expires_at).getTime();
+  return Number.isFinite(expiresAt) && expiresAt > nowMs;
+}
 
 function getPool() {
   if (!process.env.DATABASE_URL) throw new Error("DATABASE_URL is not configured");
@@ -39,8 +46,17 @@ export async function ensureAuthSchema() {
         expires_at TIMESTAMPTZ NOT NULL,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
+      CREATE TABLE IF NOT EXISTS gamevision_ai_sessions (
+        session_id TEXT PRIMARY KEY,
+        user_id UUID NOT NULL REFERENCES gamevision_users(id) ON DELETE CASCADE,
+        reserved_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        expires_at TIMESTAMPTZ NOT NULL,
+        closed_at TIMESTAMPTZ
+      );
       CREATE INDEX IF NOT EXISTS gamevision_sessions_user_idx ON gamevision_sessions(user_id);
       CREATE INDEX IF NOT EXISTS gamevision_sessions_expiry_idx ON gamevision_sessions(expires_at);
+      CREATE INDEX IF NOT EXISTS gamevision_ai_sessions_user_idx ON gamevision_ai_sessions(user_id);
+      CREATE INDEX IF NOT EXISTS gamevision_ai_sessions_expiry_idx ON gamevision_ai_sessions(expires_at);
     `);
   })().catch((error) => { schemaPromise = undefined; throw error; });
   return schemaPromise;
@@ -90,7 +106,6 @@ export async function createAccount(email, password) {
   }
 }
 
-/** Creates the account and session in one application flow, avoiding a second password lookup. */
 export async function createAccountSession(email, password) {
   await ensureAuthSchema();
   const normalized = normalizeEmail(email);
@@ -155,6 +170,41 @@ export async function consumeCredit(userId) {
     return { allowed: true, user: publicUser(updated.rows[0]) };
   } catch (error) { await client.query("ROLLBACK"); throw error; }
   finally { client.release(); }
+}
+
+export async function reserveAutomationCredit(userId, requestedSessionId = null) {
+  await ensureAuthSchema();
+  const sessionId = String(requestedSessionId || crypto.randomUUID()).trim().slice(0, 128);
+  if (!sessionId) throw Object.assign(new Error("Automation session id required"), { code: "AUTOMATION_SESSION_INVALID" });
+  const client = await getPool().connect();
+  try {
+    await client.query("BEGIN");
+    const existing = await client.query(`SELECT * FROM gamevision_ai_sessions WHERE session_id = $1 FOR UPDATE`, [sessionId]);
+    if (existing.rows[0] && existing.rows[0].user_id === userId && automationSessionIsActive(existing.rows[0])) {
+      const refreshed = await client.query(`UPDATE gamevision_ai_sessions SET expires_at = NOW() + $1::interval WHERE session_id = $2 RETURNING *`, [`${AUTOMATION_SESSION_MS} milliseconds`, sessionId]);
+      const userResult = await client.query(`SELECT * FROM gamevision_users WHERE id = $1`, [userId]);
+      await client.query("COMMIT");
+      return { allowed: true, reused: true, sessionId, user: publicUser(userResult.rows[0]), session: refreshed.rows[0] };
+    }
+    const found = await client.query(`SELECT * FROM gamevision_users WHERE id = $1 FOR UPDATE`, [userId]);
+    if (!found.rows[0]) throw Object.assign(new Error("Account not found"), { code: "ACCOUNT_NOT_FOUND" });
+    const user = await refreshAllowance(client, found.rows[0]);
+    if (Number(user.credits_remaining) <= 0) { await client.query("COMMIT"); return { allowed: false, reused: false, sessionId, user: publicUser(user) }; }
+    const updatedUser = await client.query(`UPDATE gamevision_users SET credits_remaining = credits_remaining - 1 WHERE id = $1 RETURNING *`, [userId]);
+    await client.query(`INSERT INTO gamevision_ai_sessions(session_id, user_id, reserved_at, expires_at, closed_at) VALUES($1, $2, NOW(), NOW() + $3::interval, NULL) ON CONFLICT(session_id) DO UPDATE SET user_id = EXCLUDED.user_id, reserved_at = NOW(), expires_at = EXCLUDED.expires_at, closed_at = NULL`, [sessionId, userId, `${AUTOMATION_SESSION_MS} milliseconds`]);
+    await client.query("COMMIT");
+    return { allowed: true, reused: false, sessionId, user: publicUser(updatedUser.rows[0]) };
+  } catch (error) { await client.query("ROLLBACK"); throw error; }
+  finally { client.release(); }
+}
+
+export async function closeAutomationSession(userId, sessionId, refund = false) {
+  if (!sessionId) return null;
+  await ensureAuthSchema();
+  const result = await getPool().query(`UPDATE gamevision_ai_sessions SET closed_at = NOW() WHERE session_id = $1 AND user_id = $2 AND closed_at IS NULL RETURNING *`, [String(sessionId).slice(0, 128), userId]);
+  if (!result.rows[0]) return null;
+  if (refund) return refundCredit(userId);
+  return getUserForToken; // marker replaced below
 }
 
 export async function refundCredit(userId) {
